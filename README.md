@@ -94,9 +94,12 @@ Set these in `.env`:
 | `LLM_PROVIDER` | `fake` (keep until you have an Anthropic key) |
 | `EMAIL_DRY_RUN` | `true` (nothing is sent) |
 
-Leave every other key empty until you have a real account for it. Template lines have
-comments after the `=`. Delete any comment text so the value is empty, or the comment
-becomes the value. See [Troubleshooting](#troubleshooting).
+Leave every other key empty until you have a real account for it. Keep comments on their
+own line: Docker Compose reads `KEY=   # note` as the value `# note`. See
+[Troubleshooting](#troubleshooting).
+
+`ENVIRONMENT`, `SESSION_COOKIE_SECURE`, `FORWARDED_ALLOW_IPS`, `DATABASE_URL` and `DATA_DIR`
+are fixed in `deploy/docker-compose.yml` and override `.env`. Change them there.
 
 `.env` is git-ignored. Never commit it or send it in chat. Share third-party keys
 (Anthropic, Companies House, Hunter, PostHog, Google) only through a password manager.
@@ -151,8 +154,18 @@ Run these from `deploy/`:
 | Apply code changes | `docker compose --env-file ../.env up -d --build web worker` |
 | Run a periodic job now | `docker compose --env-file ../.env exec worker growthstack run-job psi_run` (also `gsc_pull`, `posthog_pull`) |
 | Re-run research for a lead | `docker compose --env-file ../.env exec worker growthstack run-job research <LEAD_ID>` |
+| Back up the database now | `./backup.sh` (also nightly from cron; restore steps are in the script's header) |
 
 Data lives in the Docker volume `data`. `down` keeps it. Only `docker compose down -v` deletes it.
+
+### Before turning off dry run
+
+Staging must hold only internal test addresses. This must print nothing (replace
+`yourcompany.com` with your domain):
+
+```bash
+docker compose --env-file ../.env exec -T web python -c "import os, sqlite3; [print(r[0]) for r in sqlite3.connect(os.environ['DATABASE_URL'].split('sqlite:///', 1)[1]).execute(\"select email from leads where email is not null and email not like '%@yourcompany.com'\")]"
+```
 
 ### Crawl4AI anti-bot setting
 
@@ -213,6 +226,9 @@ Git Bash. The Docker route needs no Python setup.
 `tests/test_queue_redis.py` runs against a real Redis (`TEST_REDIS_URL`, default
 `redis://127.0.0.1:6390/0`) and is skipped if none is reachable. Everything else is
 offline: HTTP is mocked with respx, DNS with fake resolvers, the LLM with a fake.
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push and pull request,
+once on SQLite and once on Postgres, both with Redis. A run should show 0 skipped.
 
 ## Troubleshooting
 

@@ -12,7 +12,8 @@
   <table><tr><th>From</th><th class="n">Per day</th><th>Window (UTC)</th><th>Replies</th><th></th></tr>
   {% for m in mailboxes %}<tr><td>{{ m.from_name }}<div class="mono muted">{{ m.from_email }}</div></td><td class="n">{{ m.daily_limit }}</td>
     <td>{{ m.window_start_hour }}:00-{{ m.window_end_hour }}:00{{ '' if m.send_weekends else ', weekdays' }}</td><td>{{ 'IMAP' if m.imap_host else '-' }}</td>
-    <td><form class="inline" method="post" action="/setup/mailboxes/{{ m.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Pause' if m.active else 'Resume' }}</button></form></td></tr>
+    <td><a href="/setup/mailboxes/{{ m.id }}/edit">Edit</a>
+      <form class="inline" method="post" action="/setup/mailboxes/{{ m.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Pause' if m.active else 'Resume' }}</button></form></td></tr>
   {% else %}<tr><td colspan="5" class="muted">No mailboxes yet.</td></tr>{% endfor %}</table>
   <details style="margin-top:12px"><summary>Add a mailbox</summary>
   <form method="post" action="/setup/mailboxes"><input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -23,6 +24,7 @@
       <div><label>Min seconds between sends</label><input name="min_interval_seconds" type="number" value="120" min="30"></div></div>
     <div class="row"><div><label>Window start hour (UTC)</label><input name="window_start_hour" type="number" value="8" min="0" max="23"></div>
       <div><label>Window end hour (UTC)</label><input name="window_end_hour" type="number" value="17" min="1" max="24"></div></div>
+    <label><input name="send_weekends" type="checkbox" value="1"> Send at weekends too</label>
     <label>IMAP host for reply detection (optional)</label><input name="imap_host" placeholder="imap.gmail.com">
     <label>IMAP user</label><input name="imap_user">
     <label>Name of the env var holding the IMAP password</label><input name="imap_password_env" placeholder="IMAP_PASSWORD_SALES">
@@ -31,6 +33,7 @@
 <div class="panel"><h2>Sequences</h2>
   {% for s in sequences %}<p><strong>{{ s.name }}</strong> <span class="chip {{ 'good' if s.active }}">{{ 'active' if s.active else 'off' }}</span>
     <span class="muted">{{ s.steps|length }} steps:{% for st in s.steps %} {{ 'day 0' if st.position == 1 else '+' ~ (st.delay_hours // 24) ~ 'd' }}{% endfor %}</span>
+    <a href="/setup/sequences/{{ s.id }}/edit">Edit</a>
     <form class="inline" method="post" action="/setup/sequences/{{ s.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Turn off' if s.active else 'Turn on' }}</button></form></p>
   {% else %}<p class="muted">No sequences yet.</p>{% endfor %}
   <details><summary>Add a sequence</summary>

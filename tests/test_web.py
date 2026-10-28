@@ -255,6 +255,127 @@ def test_setup_mailbox_validation(client):
     assert "Check the sending window" in r.text
 
 
+def _mailbox_form(token, **overrides):
+    form = {"csrf_token": token, "from_email": "alex@send.example.com", "from_name": "Alex", "reply_to": "",
+            "daily_limit": 2, "min_interval_seconds": 60, "window_start_hour": 0, "window_end_hour": 24,
+            "send_weekends": "1", "imap_host": "", "imap_user": "", "imap_password_env": ""}
+    form.update(overrides)
+    return form
+
+
+def test_setup_edit_mailbox_including_imap(client, seeded):
+    token = _login(client)
+    mid = seeded["mailbox"].id
+    assert "alex@send.example.com" in client.get(f"/setup/mailboxes/{mid}/edit").text
+    r = client.post(f"/setup/mailboxes/{mid}/edit", data=_mailbox_form(
+        token, daily_limit=25, imap_host="imap.gmail.com", imap_user="alex@example.com", imap_password_env="IMAP_PASSWORD_ALEX"))
+    assert r.status_code == 200 and "saved" in r.text
+    with SessionLocal() as s:
+        from growthstack.models import Mailbox
+
+        m = s.get(Mailbox, mid)
+        assert (m.daily_limit, m.imap_host, m.imap_password_env) == (25, "imap.gmail.com", "IMAP_PASSWORD_ALEX")
+    r = client.post(f"/setup/mailboxes/{mid}/edit", data=_mailbox_form(token, window_start_hour=18, window_end_hour=9))
+    assert "Check the sending window" in r.text
+
+
+def test_setup_edit_mailbox_requires_csrf(client, seeded):
+    _login(client)
+    r = client.post(f"/setup/mailboxes/{seeded['mailbox'].id}/edit", data={"from_email": "x@y.com", "from_name": "X"})
+    assert r.status_code == 403
+    client.cookies.clear()
+    assert client.get(f"/setup/mailboxes/{seeded['mailbox'].id}/edit", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_setup_mailbox_in_use_cannot_be_deleted(client, seeded):
+    token = _login(client)
+    from growthstack.models import Mailbox
+
+    with SessionLocal() as s:
+        lead = s.get(Lead, seeded["lead"].id)
+        sequencer.create_draft_enrollment(s, lead, first_subject="Hi", first_body="Hello")
+        s.commit()
+    r = client.post(f"/setup/mailboxes/{seeded['mailbox'].id}/delete", data={"csrf_token": token})
+    assert "Pause it instead" in r.text
+    with SessionLocal() as s:
+        assert s.get(Mailbox, seeded["mailbox"].id) is not None
+
+
+def test_setup_unused_mailbox_can_be_deleted(client, seeded):
+    token = _login(client)
+    from growthstack.models import Mailbox
+
+    client.post("/setup/mailboxes", data=_mailbox_form(token, from_email="spare@send.example.com"))
+    client.post("/setup/mailboxes", data=_mailbox_form(token, from_email="spare@send.example.com"))  # no duplicate
+    with SessionLocal() as s:
+        spare = s.query(Mailbox).filter_by(from_email="spare@send.example.com").one()
+    r = client.post(f"/setup/mailboxes/{spare.id}/delete", data={"csrf_token": token})
+    assert r.status_code == 200 and "deleted" in r.text
+    with SessionLocal() as s:
+        assert s.get(Mailbox, spare.id) is None
+
+
+def _sequence_form(token, name="Default", **steps):
+    form = {"csrf_token": token, "name": name}
+    form.update(steps)
+    return form
+
+
+def test_setup_edit_sequence_leaves_drafted_messages_unchanged(client, seeded):
+    token = _login(client)
+    sid = seeded["sequence"].id
+    with SessionLocal() as s:
+        e = sequencer.create_draft_enrollment(s, s.get(Lead, seeded["lead"].id), first_subject="Hi", first_body="Hello")
+        s.commit()
+        eid = e.id
+    assert "keep the text they have" in client.get(f"/setup/sequences/{sid}/edit").text
+    r = client.post(f"/setup/sequences/{sid}/edit", data=_sequence_form(
+        token, delay_2=4, subject_2="", body_2="New follow-up for {{ first_name }}",
+        delay_3=6, subject_3="Last note", body_3="New last note."))
+    assert r.status_code == 200 and "saved" in r.text
+    with SessionLocal() as s:
+        from growthstack.models import Enrollment, Sequence
+
+        msgs = {m.step_position: m.body_text for m in s.get(Enrollment, eid).messages}
+        assert msgs[2] == "Hi Jane, following up." and msgs[3] == "Bye from us to Acme Ltd."
+        steps = {st.position: st for st in s.get(Sequence, sid).steps}
+        assert steps[2].body_template == "New follow-up for {{ first_name }}" and steps[2].delay_hours == 96
+
+
+def test_setup_sequence_in_use_keeps_its_steps_and_cannot_be_deleted(client, seeded):
+    token = _login(client)
+    sid = seeded["sequence"].id
+    with SessionLocal() as s:
+        sequencer.create_draft_enrollment(s, s.get(Lead, seeded["lead"].id), first_subject="Hi", first_body="Hello")
+        s.commit()
+    r = client.post(f"/setup/sequences/{sid}/edit", data=_sequence_form(token, delay_2=3, body_2="Only one follow-up"))
+    assert "can&#39;t be removed" in r.text
+    r = client.post(f"/setup/sequences/{sid}/delete", data={"csrf_token": token})
+    assert "Turn it off instead" in r.text
+    with SessionLocal() as s:
+        from growthstack.models import Sequence
+
+        assert len(s.get(Sequence, sid).steps) == 3
+
+
+def test_setup_unused_sequence_can_be_edited_and_deleted(client, seeded):
+    token = _login(client)
+    from growthstack.models import Sequence
+
+    client.post("/setup/sequences", data=_sequence_form(token, name="Spare", delay_2=3, body_2="One", delay_3=5, body_3="Two"))
+    with SessionLocal() as s:
+        sid = s.query(Sequence).filter_by(name="Spare").one().id
+    r = client.post(f"/setup/sequences/{sid}/edit", data=_sequence_form(token, name="Spare v2", delay_2=3, body_2="Only one"))
+    assert "saved" in r.text
+    with SessionLocal() as s:
+        seq = s.get(Sequence, sid)
+        assert seq.name == "Spare v2" and [st.position for st in seq.steps] == [1, 2]
+    r = client.post(f"/setup/sequences/{sid}/delete", data={"csrf_token": token})
+    assert "deleted" in r.text
+    with SessionLocal() as s:
+        assert s.get(Sequence, sid) is None
+
+
 def test_production_refuses_unsafe_config(monkeypatch, database):
     from growthstack.config import get_settings
     from growthstack.web.app import create_app

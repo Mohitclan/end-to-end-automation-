@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Edit sequence · growthstack{% endblock %}
+{% block content %}
+<p><a href="/setup">← Setup</a></p>
+<h1>Edit sequence</h1>
+<div class="flash">Follow-up text is copied into each lead's messages when their draft is made, so edits here only affect
+  new drafts. Leads already drafted or enrolled keep the text they have.</div>
+<div class="grid g2">
+<form class="panel" method="post" action="/setup/sequences/{{ s.id }}/edit"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label>Name</label><input name="name" value="{{ s.name }}" required>
+  <p class="muted" style="font-size:13px">Step 1 is written by the AI for each lead and approved by a person. Follow-ups below are templates;
+    you can use {{ '{{ first_name }}' }}, {{ '{{ company }}' }}, {{ '{{ title }}' }}. Leave the subject blank to reply in the same thread.
+    {% if in_use %}Leads are enrolled in this sequence, so steps can be edited or added but not removed.{% endif %}</p>
+  {% for pos in positions %}{% set st = steps.get(pos) %}
+    <label>Step {{ pos }}: days after previous step</label><input name="delay_{{ pos }}" type="number" value="{{ (st.delay_hours // 24) if st else (3 if pos == 2 else 5) }}" min="1">
+    <label>Step {{ pos }} subject (optional)</label><input name="subject_{{ pos }}" value="{{ st.subject_template if st else '' }}">
+    <label>Step {{ pos }} body (leave empty to end the sequence here)</label><textarea name="body_{{ pos }}" style="min-height:90px">{{ st.body_template if st else '' }}</textarea>
+  {% endfor %}
+  <p><button>Save sequence</button></p>
+</form>
+<div class="panel"><h2>Turn {{ 'off' if s.active else 'on' }} or delete</h2>
+  <p class="muted" style="font-size:13px">Turning a sequence off stops new enrollments and keeps running ones.
+    A sequence can only be deleted when no lead has ever been enrolled in it.</p>
+  <form class="inline" method="post" action="/setup/sequences/{{ s.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Turn off' if s.active else 'Turn on' }}</button></form>
+  {% if not in_use %}<form class="inline" method="post" action="/setup/sequences/{{ s.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="danger">Delete sequence</button></form>{% endif %}
+</div>
+</div>
+{% endblock %}
