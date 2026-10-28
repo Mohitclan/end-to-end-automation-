@@ -14,7 +14,8 @@ import httpx
 from growthstack.config import Settings, get_settings
 
 TIMEOUT = httpx.Timeout(30.0)
-HOSTS = {"us": "https://us.posthog.com", "eu": "https://eu.posthog.com"}
+HOSTS = {"us": "https://us.posthog.com", "eu": "https://eu.posthog.com"}  # query API
+INGEST_HOSTS = {"us": "https://us.i.posthog.com", "eu": "https://eu.i.posthog.com"}  # event capture
 
 
 class PostHogError(Exception):
@@ -122,13 +123,30 @@ class PostHogQueryClient:
         return {_to_date(r["day"]): int(r["n"]) for r in rows}
 
     def person_event_count(self, email: str, days: int) -> int:
-        rows = self.hogql(
-            "SELECT count() AS n FROM events "
-            "WHERE person.properties.email = {email} "
-            f"AND timestamp >= now() - toIntervalDay({_days(days)})",
-            {"email": email.strip()},
-        )
-        return int(rows[0]["n"]) if rows else 0
+        """Events in the last `days` by the person with this email (case-insensitive)."""
+        return self.person_event_counts([email], days).get(email.strip().lower(), 0)
+
+    def person_event_counts(self, emails: list[str], days: int, chunk: int = 200) -> dict[str, int]:
+        """Event counts for many people at once, keyed by lower-cased email; emails with
+        no events map to 0. One query per `chunk` emails instead of one per person,
+        which keeps an hourly refresh of hundreds of leads well inside PostHog's
+        query rate limit. Each email is its own `{eN}` placeholder (never text)."""
+        wanted = sorted({e.strip().lower() for e in emails if e and e.strip()})
+        counts = dict.fromkeys(wanted, 0)
+        for i in range(0, len(wanted), max(1, int(chunk))):
+            batch = wanted[i : i + max(1, int(chunk))]
+            names = [f"e{n}" for n in range(len(batch))]
+            rows = self.hogql(
+                "SELECT lower(person.properties.email) AS email, count() AS n FROM events "
+                f"WHERE lower(person.properties.email) IN ({', '.join('{' + n + '}' for n in names)}) "
+                f"AND timestamp >= now() - toIntervalDay({_days(days)}) GROUP BY email",
+                dict(zip(names, batch, strict=True)),
+            )
+            for r in rows:
+                key = str(r.get("email") or "").lower()
+                if key in counts:
+                    counts[key] = int(r["n"])
+        return counts
 
     def recent_signups(self, event: str, since: datetime, limit: int = 1000) -> list[dict]:
         """Signup events since ``since`` (naive = UTC), one per email, oldest first.

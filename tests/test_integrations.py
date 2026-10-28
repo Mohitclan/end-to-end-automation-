@@ -226,20 +226,42 @@ def test_posthog_daily_unique_visitors(posthog):
 
 @respx.mock
 def test_posthog_person_event_count_uses_placeholder_for_injection(posthog):
-    route = respx.post(PH_QUERY).respond(json={"columns": ["n"], "results": [[3]]})
-    evil = "x' OR 1=1 --@evil.com"
+    evil = "x' or 1=1 --@evil.com"
+    route = respx.post(PH_QUERY).respond(json={"columns": ["email", "n"], "results": [[evil, 3]]})
     assert posthog.person_event_count(evil, 14) == 3
     q = _body(route)["query"]
     # the user value never reaches the query text; it travels as a bound value
-    assert evil not in q["query"] and "' OR" not in q["query"]
-    assert "{email}" in q["query"]
-    assert q["values"] == {"email": evil}
+    assert evil not in q["query"] and "' or" not in q["query"].lower()
+    assert "{e0}" in q["query"]
+    assert q["values"] == {"e0": evil}
 
 
 @respx.mock
 def test_posthog_person_event_count_empty(posthog):
-    respx.post(PH_QUERY).respond(json={"columns": ["n"], "results": []})
+    respx.post(PH_QUERY).respond(json={"columns": ["email", "n"], "results": []})
     assert posthog.person_event_count("a@b.com", 7) == 0
+
+
+@respx.mock
+def test_posthog_person_event_counts_batches_and_ignores_case(posthog):
+    route = respx.post(PH_QUERY).mock(
+        side_effect=[
+            httpx.Response(200, json={"columns": ["email", "n"], "results": [["a@x.io", 5], ["c@x.io", 2]]}),
+            httpx.Response(200, json={"columns": ["email", "n"], "results": [["e@x.io", 1]]}),
+        ]
+    )
+    emails = ["A@x.io", "b@x.io", "c@x.io ", "d@x.io", "e@x.io", "a@x.io", ""]
+    counts = posthog.person_event_counts(emails, 30, chunk=3)
+    # 5 unique addresses in chunks of 3 -> 2 queries, not one per lead
+    assert route.call_count == 2
+    assert counts == {"a@x.io": 5, "b@x.io": 0, "c@x.io": 2, "d@x.io": 0, "e@x.io": 1}
+    first = json.loads(route.calls[0].request.content)["query"]
+    assert first["values"] == {"e0": "a@x.io", "e1": "b@x.io", "e2": "c@x.io"}
+    assert "IN ({e0}, {e1}, {e2})" in first["query"] and "lower(person.properties.email)" in first["query"]
+
+
+def test_posthog_person_event_counts_empty_list_makes_no_call(posthog):
+    assert posthog.person_event_counts([], 30) == {}
 
 
 def test_posthog_days_must_be_int_and_positive(posthog):

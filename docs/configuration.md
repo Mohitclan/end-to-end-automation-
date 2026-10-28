@@ -62,13 +62,25 @@ requests/minute; the job works in batches of 50.
 
 ## Analytics: PostHog Cloud (Stage 7)
 
-1. Use the EU region if you have EU visitors.
-2. Install [site-snippet/posthog-consent.html](../site-snippet/posthog-consent.html) on the
-   marketing site. It has no cookies or recordings until the visitor accepts, and sends
-   `posthog.identify` + `posthog.capture('user_signed_up')` on signup.
-3. For the dashboard and scoring: a personal API key with *Query Read* →
-   `POSTHOG_PERSONAL_API_KEY`, plus `POSTHOG_PROJECT_ID` and `POSTHOG_REGION`.
-   `POSTHOG_SIGNUP_EVENT` must match the event name the site sends.
+Our project is on **US Cloud** (`POSTHOG_REGION=us`). To check which cloud a `phc_`
+key belongs to: `https://us-assets.i.posthog.com/array/<key>/config` answers 200 for a US
+key and 404 otherwise (same with `eu-assets` for EU).
+
+1. Install [site-snippet/posthog-consent.html](../site-snippet/posthog-consent.html) on
+   every page of the marketing site, just before `</body>`. It already contains the
+   official loader, our project key and the US host. Before a visitor chooses there are no
+   cookies and no recordings; Accept turns both on; Decline stops capturing. The choice is
+   remembered. Test it locally with `site-snippet/test-page.html` (instructions inside).
+2. Send `user_signed_up` from the website's **backend** after a real signup:
+   [docs/posthog-signup-event.md](posthog-signup-event.md). Test without the website using
+   `scripts/send_test_signup.py`.
+3. For the dashboard and scoring: a personal API key (`phx_`) with **Query Read** only →
+   `POSTHOG_PERSONAL_API_KEY`, plus `POSTHOG_PROJECT_ID`. `POSTHOG_SIGNUP_EVENT` must
+   match the event name the site sends. Check everything with
+   `.venv/bin/python scripts/check_posthog.py`; if it answers 403, also give the key
+   **Person: Read**.
+4. Query limits: 240 queries a minute and 2,400 an hour per project (older projects:
+   120 an hour). The hourly `posthog_pull` job uses about 6 queries a run.
 
 ## Search Console + PageSpeed (Stage 5)
 
@@ -76,8 +88,11 @@ requests/minute; the job works in batches of 50.
   download its JSON key, and add the service account's email as a user on the property.
   `GSC_SITE_URL=sc-domain:yourdomain.com` (domain property) or `https://yourdomain.com/`,
   `GSC_SERVICE_ACCOUNT_FILE=/path/key.json`. Google's data lags 2-3 days.
-- PageSpeed Insights: `PSI_URLS=https://yourdomain.com/,https://yourdomain.com/pricing`,
-  optional `PSI_API_KEY` (higher quota). Each page is scored mobile + desktop daily.
+- PageSpeed Insights: `PSI_URLS=https://yourdomain.com/,https://yourdomain.com/pricing`
+  and `PSI_API_KEY`. The key is effectively **required**: Google's docs call it optional,
+  but keyless requests currently fail with 429 (the shared anonymous quota is 0). Create
+  it in Google Cloud and restrict it to the PageSpeed Insights API. Each page is scored
+  mobile + desktop daily.
 - Lighthouse CI on every deploy of the marketing site: copy `deploy/site-ci/` into that repo.
 
 ## Lead sources (Stage 1)

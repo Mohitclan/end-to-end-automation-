@@ -170,8 +170,10 @@ def posthog_pull() -> str:
                 Lead.stage.not_in([LeadStage.DO_NOT_CONTACT, LeadStage.DISQUALIFIED, LeadStage.REJECTED]),
             ).limit(500)
         ).all()
+        # One query per 200 leads, not one per lead: PostHog rate-limits its query API.
+        counts = client.person_event_counts([lead.email for lead in active], days=30)
         for lead in active:
-            lead.posthog_events_30d = client.person_event_count(lead.email, days=30)
+            lead.posthog_events_30d = counts.get(lead.email.lower(), 0)
     return f"{len(signups)} signup days, {report.created} new signup leads, {len(active)} leads refreshed"
 
 
