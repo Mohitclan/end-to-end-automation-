@@ -1,0 +1,78 @@
+# Small-server deployment of growthstack and the services it needs.
+# Twenty CRM and listmonk run unchanged from their own official compose files
+# (see docs/deployment.md); PostHog is the cloud version.
+#
+#   cp ../.env.example .env   # fill in values
+#   docker compose up -d
+#   docker compose run --rm web growthstack migrate
+#   docker compose run --rm web growthstack create-user you@company.com
+#
+# Put a TLS reverse proxy (Caddy, nginx, Traefik) in front of `web`: unsubscribe
+# links and webhooks must be https. Limit request bodies there too (6 MB is enough).
+#
+# Network isolation: crawl4ai's headless browser visits prospect-controlled sites, so it
+# sits alone on the `crawl` network and cannot reach postgres, redis or web. Also block
+# the cloud metadata address (169.254.169.254) for containers with a host firewall rule
+# or an egress proxy; Docker networks alone don't stop that.
+x-app-env: &app-env
+  ENVIRONMENT: production
+  SESSION_COOKIE_SECURE: "true"
+  DATABASE_URL: postgresql+psycopg://growthstack:${POSTGRES_PASSWORD}@postgres:5432/growthstack
+  REDIS_URL: redis://redis:6379/0
+  CRAWL4AI_URL: http://crawl4ai:11235
+
+services:
+  web:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    env_file: .env
+    environment:
+      <<: *app-env
+      # The reverse proxy's address as seen from this container; never "*".
+      FORWARDED_ALLOW_IPS: ${PROXY_IP:?set PROXY_IP to the reverse proxy address}
+    networks: [app]
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: [data:/data]
+    depends_on: [postgres, redis]
+    restart: unless-stopped
+
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: ["growthstack", "worker"]
+    env_file: .env
+    environment: *app-env
+    networks: [app, crawl]
+    volumes: [data:/data]
+    depends_on: [postgres, redis]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: growthstack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: growthstack
+    networks: [app]
+    volumes: [pg:/var/lib/postgresql/data]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    # BullMQ needs noeviction so queued jobs are never dropped under memory pressure.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    networks: [app]
+    volumes: [redis:/data]
+    restart: unless-stopped
+
+  crawl4ai:
+    image: unclecode/crawl4ai:0.9.2
+    environment:
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_TOKEN:?set CRAWL4AI_TOKEN}
+    shm_size: "1g"
+    networks: [crawl]
+    restart: unless-stopped
+
+networks:
+  app: {}
+  crawl: {}
+
+volumes: { data: {}, pg: {}, redis: {} }

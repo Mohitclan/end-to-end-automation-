@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · growthstack{% endblock %}
+{% block content %}
+{% set k = d.kpis %}
+<div class="row" style="margin-bottom:12px"><h1 style="margin:0">Where we stand</h1><span class="spacer"></span>
+  {% if k.awaiting %}<a class="btn" href="/approvals">{{ k.awaiting }} draft{{ 's' if k.awaiting != 1 }} waiting for approval</a>{% endif %}
+</div>
+
+<div class="grid g4">
+  <div class="panel kpi"><div class="l">Leads</div><div class="v">{{ k.total_leads|num }}</div><div class="s">+{{ k.new_leads_7d }} this week</div></div>
+  <div class="panel kpi"><div class="l">Emails sent (7 days)</div><div class="v">{{ k.sent_7d|num }}</div><div class="s">{{ k.sent_30d|num }} in 30 days</div></div>
+  <div class="panel kpi"><div class="l">Replies (7 days)</div><div class="v">{{ k.replies_7d|num }}</div>
+    <div class="s">reply rate 30d: {{ (k.reply_rate_30d|pct ~ '%') if k.reply_rate_30d is not none else '-' }}</div></div>
+  <div class="panel kpi"><div class="l">Signups (30 days)</div><div class="v">{{ k.signups_30d|num }}</div>
+    {{ sparkline(d.signup_series, label="Daily signups, last 30 days") }}
+    <div class="s">{{ k.visitors_30d|num }} unique visitors · PostHog</div></div>
+</div>
+
+<div class="grid g2" style="margin-top:16px">
+  <div class="panel">
+    <h2>Search: impressions &amp; clicks (28 days)</h2>
+    <div class="row">
+      <div class="kpi"><div class="v">{{ k.impressions_28d|num }}</div><div class="l">impressions</div></div>
+      <div class="kpi"><div class="v">{{ k.clicks_28d|num }}</div><div class="l">clicks</div></div>
+      <div class="kpi"><div class="v">{{ "%.1f"|format(k.avg_position) if k.avg_position else '-' }}</div><div class="l">avg position</div></div>
+    </div>
+    {{ sparkline(d.impression_series, label="Daily search impressions") }}
+    <div class="s muted" style="font-size:12px">Search Console{% if d.gsc_last_day %}, data to {{ d.gsc_last_day }} (Google reports with a 2-3 day delay){% endif %}</div>
+    {% if d.top_queries %}
+    <table style="margin-top:12px"><tr><th>Top queries</th><th class="n">Clicks</th><th class="n">Impr.</th><th class="n">Pos.</th></tr>
+      {% for q in d.top_queries %}<tr><td>{{ q.query }}</td><td class="n">{{ q.clicks|num }}</td><td class="n">{{ q.impressions|num }}</td><td class="n">{{ "%.1f"|format(q.position) }}</td></tr>{% endfor %}
+    </table>{% endif %}
+  </div>
+  <div class="panel">
+    <h2>Pipeline</h2>
+    {{ bars(d.pipeline) }}
+    {% if d.top_leads %}
+    <h2 style="margin-top:18px">Best leads not yet contacted</h2>
+    <table>{% for l in d.top_leads %}<tr><td><a href="/leads/{{ l.id }}">{{ l.full_name }}</a> <span class="muted">{{ l.company.name if l.company }}</span></td><td class="n">{{ l.score }}</td></tr>{% endfor %}</table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid g2" style="margin-top:16px">
+  <div class="panel">
+    <h2>Page scores (Lighthouse via PageSpeed Insights)</h2>
+    {% if d.page_scores %}
+    <table><tr><th>Page</th><th></th><th class="n">Perf</th><th class="n">SEO</th><th class="n">A11y</th><th class="n">Best pr.</th></tr>
+    {% for p in d.page_scores %}
+      <tr><td class="mono">{{ p.url }}</td><td><span class="chip">{{ p.strategy }}</span></td>
+      {% if p.error %}<td colspan="4" class="muted">failed: {{ p.error[:80] }}</td>{% else %}
+        {% for v in [p.performance, p.seo, p.accessibility, p.best_practices] %}
+        <td class="n"><span class="chip {{ 'good' if v is not none and v >= 90 else ('warn' if v is not none and v >= 50 else 'bad') }}">{{ v|pct }}</span></td>{% endfor %}
+      {% endif %}</tr>
+    {% endfor %}</table>
+    {% else %}<div class="empty-chart">No scores yet. Set PSI_URLS; the job runs daily.</div>{% endif %}
+  </div>
+  <div class="panel">
+    <h2>Sending domain</h2>
+    {% if d.domain %}
+      <div class="row"><strong>{{ d.domain.domain }}</strong>
+        <span class="chip {{ 'good' if d.domain.spf_valid else 'bad' }}">SPF {{ 'ok' if d.domain.spf_valid else 'failing' }}</span>
+        <span class="chip {{ 'good' if d.domain.dmarc_valid else 'bad' }}">DMARC {{ d.domain.dmarc_policy or ('ok' if d.domain.dmarc_valid else 'missing') }}</span>
+        <span class="muted">checked {{ d.domain.checked_at|dt }}</span></div>
+      {% for w in d.domain.warnings %}<p class="muted" style="margin:6px 0;font-size:13px">{{ w }}</p>{% endfor %}
+    {% else %}<div class="empty-chart">Not checked yet. Set SENDING_DOMAIN.</div>{% endif %}
+    <h2 style="margin-top:18px">Data freshness</h2>
+    {% if d.jobs %}<table>{% for j in d.jobs %}<tr><td class="mono">{{ j.name }}</td>
+      <td><span class="chip {{ 'good' if j.last_ok else ('bad' if j.last_ok is not none else '') }}">{{ 'ok' if j.last_ok else ('failed' if j.last_ok is not none else 'running') }}</span></td>
+      <td class="muted">{{ j.last_finished_at|dt }}</td><td class="muted" style="font-size:12px">{{ (j.last_message or '')[:70] }}</td></tr>{% endfor %}</table>
+    {% else %}<div class="empty-chart">No jobs have run yet. Start the worker.</div>{% endif %}
+  </div>
+</div>
+{% endblock %}

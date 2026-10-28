@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "growthstack-web",
+      "runtimeExecutable": ".venv/bin/growthstack",
+      "runtimeArgs": ["web", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

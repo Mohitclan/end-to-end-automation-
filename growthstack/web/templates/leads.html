@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Leads · growthstack{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:12px">
+  <h1 style="margin:0">Leads <span class="muted" style="font-weight:400">{{ total }}</span></h1>
+  <span class="spacer"></span>
+  <form method="post" action="/leads/research-bulk" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="number" name="limit" value="25" min="1" max="200" style="width:90px" aria-label="How many">
+    <button>Research new leads</button>
+  </form>
+</div>
+<form method="get" class="row panel" style="margin-bottom:16px">
+  <input name="q" value="{{ q }}" placeholder="Search name, email or company" style="max-width:320px">
+  <select name="stage" style="max-width:200px"><option value="">All stages</option>
+    {% for s in stages %}<option value="{{ s }}" {{ 'selected' if s == stage }}>{{ s.replace('_',' ') }}</option>{% endfor %}</select>
+  <button class="ghost">Filter</button>
+</form>
+<div class="panel" style="overflow-x:auto">
+<table>
+  <tr><th>Name</th><th>Company</th><th>Email</th><th>Stage</th><th>Source</th><th class="n">Score</th></tr>
+  {% for l in leads %}
+  <tr>
+    <td><a href="/leads/{{ l.id }}">{{ l.full_name or '(no name)' }}</a><div class="muted" style="font-size:12px">{{ l.title or '' }}</div></td>
+    <td>{{ l.company.name if l.company else '' }}</td>
+    <td class="mono">{{ l.email or '-' }}</td>
+    <td><span class="chip">{{ l.stage.replace('_',' ') }}</span>{% if l.research_status in ('queued','running') %} <span class="chip warn">research {{ l.research_status }}</span>{% elif l.research_status == 'failed' %} <span class="chip bad">research failed</span>{% endif %}</td>
+    <td class="muted" style="font-size:13px">{{ l.source }}</td>
+    <td class="n">{{ l.score if l.score is not none else '-' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">No leads yet. <a href="/import">Import some</a>.</td></tr>{% endfor %}
+</table>
+</div>
+{% if pages > 1 %}<p class="row">{% if page > 1 %}<a href="?q={{ q|urlencode }}&stage={{ stage }}&page={{ page-1 }}">Previous</a>{% endif %}
+<span class="muted">page {{ page }} of {{ pages }}</span>{% if page < pages %}<a href="?q={{ q|urlencode }}&stage={{ stage }}&page={{ page+1 }}">Next</a>{% endif %}</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Import · growthstack{% endblock %}
+{% block content %}
+<h1>Import leads</h1>
+<p class="muted">Use only public business contact data. Every lead keeps a record of where it came from, and the first
+email tells the person (GDPR Art. 14). Addresses on the do-not-contact list are skipped.</p>
+<div class="grid g2">
+  <div class="panel">
+    <h2>CSV upload</h2>
+    <form method="post" action="/import/csv" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label for="file">CSV file (up to 5 MB). Columns: email (required), first name, last name or name, title, company, website, country</label>
+      <input id="file" type="file" name="file" accept=".csv,text/csv" required>
+      <label for="source_detail">Where did this list come from? (shown to recipients)</label>
+      <input id="source_detail" name="source_detail" required minlength="5" placeholder="e.g. Exhibitor list on the SaaS Expo 2026 website">
+      <p><button>Import</button></p>
+    </form>
+  </div>
+  <div class="panel">
+    <h2>UK Companies House</h2>
+    {% if ch_enabled %}
+    <form method="post" action="/import/companies-house">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label for="name_includes">Company name contains</label><input id="name_includes" name="name_includes">
+      <label for="sic_codes">SIC codes (comma separated, e.g. 62012,62020)</label><input id="sic_codes" name="sic_codes">
+      <label for="location">Location</label><input id="location" name="location" placeholder="e.g. Manchester">
+      <label for="size">How many companies (max 100)</label><input id="size" name="size" type="number" value="20" min="1" max="100">
+      <p><button>Search and import active companies</button></p>
+      <p class="muted" style="font-size:13px">Imports companies and their current directors. The register has no email addresses, so find them with Hunter below.</p>
+    </form>
+    {% else %}<p class="muted">Set COMPANIES_HOUSE_API_KEY to enable.</p>{% endif %}
+    <h2 style="margin-top:20px">Hunter (50 free credits/month)</h2>
+    {% if hunter_enabled %}
+    <form method="post" action="/import/hunter">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label for="company_id">Company (needs a website domain)</label>
+      <select id="company_id" name="company_id">{% for c in companies %}<option value="{{ c.id }}">{{ c.name }} ({{ c.domain }})</option>{% endfor %}</select>
+      <p><button {{ 'disabled' if not companies }}>Find public emails</button></p>
+    </form>
+    {% else %}<p class="muted">Set HUNTER_API_KEY to enable.</p>{% endif %}
+  </div>
+</div>
+<div class="panel" style="margin-top:16px"><h2>Inbound signups</h2>
+<p class="muted">People who sign up on the website are pulled from PostHog every hour and added as converted leads.</p></div>
+{% endblock %}

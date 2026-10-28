@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Unsubscribe{% endblock %}
+{% block content %}
+<div class="panel" style="max-width:460px;margin:64px auto">
+{% if invalid %}
+  <h1>Link not recognised</h1>
+  <p>This unsubscribe link is invalid. Reply to the email with "unsubscribe" and we will remove you.</p>
+{% elif done %}
+  <h1>You're unsubscribed</h1>
+  <p><span class="mono">{{ email }}</span> won't receive any more emails from {{ company }}.</p>
+{% else %}
+  <h1>Unsubscribe</h1>
+  <p>Stop all emails from {{ company }} to <span class="mono">{{ email }}</span>?</p>
+  <form method="post" action="/u/{{ token }}"><button>Unsubscribe</button></form>
+{% endif %}
+</div>
+{% endblock %}

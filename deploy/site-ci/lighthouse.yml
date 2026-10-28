@@ -1,0 +1,23 @@
+# Copy to .github/workflows/lighthouse.yml in the MARKETING SITE repository (not this one).
+# Re-runs Lighthouse on every deploy so scores don't slip (Stage 5 "Get found").
+# Put lighthouserc.json at that repo's root and change the URLs in it.
+# Not run from this repo: Node isn't part of growthstack's toolchain.
+name: Lighthouse CI
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g @lhci/cli@0.14.0
+      - run: lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+      # Whole-site scan (all pages, not just the three above). Uncomment when wanted:
+      # - run: npx unlighthouse-ci --site https://example.com --budget 80

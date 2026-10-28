@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.full_name }} · growthstack{% endblock %}
+{% block content %}
+<div class="row"><h1 style="margin:0">{{ lead.full_name or '(no name)' }}</h1>
+  <span class="chip">{{ lead.stage.replace('_',' ') }}</span>{% if blocked %}<span class="chip bad">do-not-contact</span>{% endif %}
+  <span class="spacer"></span>
+  <form class="inline" method="post" action="/leads/{{ lead.id }}/research"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button {{ 'disabled' if not lead.email or blocked }}>Research &amp; draft</button></form>
+  <form class="inline" method="post" action="/leads/{{ lead.id }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">Stop outreach</button></form>
+  <form class="inline" method="post" action="/leads/{{ lead.id }}/stage"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stage" value="converted"><button class="ghost">Mark converted</button></form>
+</div>
+<div class="grid g2" style="margin-top:16px">
+  <div class="panel">
+    <h2>Details</h2>
+    <table>
+      <tr><td class="muted">Email</td><td class="mono">{{ lead.email or '-' }}</td></tr>
+      <tr><td class="muted">Title</td><td>{{ lead.title or '-' }}</td></tr>
+      <tr><td class="muted">Company</td><td>{{ lead.company.name if lead.company else '-' }}{% if lead.company and lead.company.domain %} <span class="mono muted">{{ lead.company.domain }}</span>{% endif %}</td></tr>
+      <tr><td class="muted">Website</td><td class="mono">{{ lead.website or '-' }}</td></tr>
+      <tr><td class="muted">Source</td><td>{{ lead.source }}: {{ lead.source_detail }}<div class="muted" style="font-size:12px">lawful basis: {{ lead.lawful_basis.replace('_',' ') }} · imported by {{ lead.imported_by or 'system' }} on {{ lead.created_at|dt }}</div></td></tr>
+      <tr><td class="muted">Email check</td><td>{{ lead.verification_status or 'not checked' }}{% if lead.verification and lead.verification.reasons %} <span class="muted">({{ lead.verification.reasons|join(', ') }})</span>{% endif %}{% if lead.verification and lead.verification.suggestion %} · did you mean <span class="mono">{{ lead.verification.suggestion }}</span>?{% endif %}</td></tr>
+      <tr><td class="muted">CRM</td><td>{{ 'in Twenty' if lead.twenty_person_id else 'not synced yet' }}</td></tr>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Score {{ lead.score if lead.score is not none else '' }}</h2>
+    {% if lead.score_breakdown %}<table>{% for name, part in lead.score_breakdown.items() %}
+      <tr><td>{{ name }}</td><td class="muted">{{ part.why }}</td><td class="n">{{ "%+.1f"|format(part.points) }}</td></tr>{% endfor %}</table>
+    {% else %}<p class="muted">Scored after research.</p>{% endif %}
+    {% if lead.research_error %}<p class="chip warn">{{ lead.research_error }}</p>{% endif %}
+    {% if lead.research_summary %}<h2 style="margin-top:16px">Research</h2><pre class="wrap">{{ lead.research_summary }}</pre>{% endif %}
+  </div>
+</div>
+<div class="panel" style="margin-top:16px">
+  <h2>Outreach</h2>
+  {% for e in lead.enrollments|reverse %}
+    <p><strong>{{ e.sequence.name }}</strong> <span class="chip">{{ e.status.replace('_',' ') }}</span> <span class="muted">from {{ e.mailbox.from_email }}{% if e.approved_by %} · approved by {{ e.approved_by }} {{ e.approved_at|dt }}{% endif %}{% if e.stop_reason %} · {{ e.stop_reason }}{% endif %}</span></p>
+    <table><tr><th>Step</th><th>Subject</th><th>Status</th><th>When</th></tr>
+    {% for m in e.messages %}<tr><td>{{ m.step_position }}</td><td>{{ m.subject }}</td><td><span class="chip">{{ m.status }}</span>{% if m.error %} <span class="muted" style="font-size:12px">{{ m.error[:120] }}</span>{% endif %}</td><td class="muted">{{ (m.sent_at or m.deferred_until or m.scheduled_for)|dt }}{% if m.deferred_until and not m.sent_at %} <span class="chip warn">held by mailbox limits</span>{% endif %}</td></tr>{% endfor %}
+    </table>
+  {% else %}<p class="muted">Not contacted.</p>{% endfor %}
+</div>
+{% endblock %}

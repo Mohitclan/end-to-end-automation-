@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Do-not-contact · growthstack{% endblock %}
+{% block content %}
+<h1>Do-not-contact list</h1>
+<p class="muted">One list for every channel: outreach checks it before every send, imports skip it, and it syncs to the listmonk
+newsletter. Unsubscribes, spam complaints, hard bounces and "please stop" replies are added automatically.</p>
+<div class="grid g2">
+  <form class="panel" method="post" action="/dnc">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <h2>Add</h2>
+    <label for="value">Email address, or a domain to block everyone there</label><input id="value" name="value" required placeholder="name@company.com or company.com">
+    <label for="note">Note</label><input id="note" name="note">
+    <p><button>Add and stop outreach</button></p>
+  </form>
+  <form class="panel" method="get"><h2>Search</h2><input name="q" value="{{ q }}" placeholder="email or domain"><p><button class="ghost">Search</button></p></form>
+</div>
+<div class="panel" style="margin-top:16px;overflow-x:auto">
+<table><tr><th>Entry</th><th>Reason</th><th>Channel</th><th>Added</th><th>listmonk</th><th></th></tr>
+{% for e in entries %}<tr>
+  <td class="mono">{{ e.email or ('@' ~ e.domain) }}</td><td><span class="chip">{{ e.reason.replace('_',' ') }}</span>{% if e.note %}<div class="muted" style="font-size:12px">{{ e.note }}</div>{% endif %}</td>
+  <td>{{ e.channel }}</td><td class="muted">{{ e.created_at|dt }}</td><td>{{ 'synced' if e.synced_to_listmonk else '-' }}</td>
+  <td>{% if e.reason in ('manual','hard_bounce','reply_opt_out_unverified') %}<form class="inline" method="post" action="/dnc/{{ e.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">Remove</button></form>{% endif %}</td>
+</tr>{% else %}<tr><td colspan="6" class="muted">The list is empty.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

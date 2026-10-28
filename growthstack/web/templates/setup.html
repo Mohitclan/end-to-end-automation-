@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Setup · growthstack{% endblock %}
+{% block content %}
+<h1>Setup</h1>
+{% if dry_run %}<div class="flash error">EMAIL_DRY_RUN is on: approved emails are marked as sent but nothing reaches Resend.</div>{% endif %}
+<div class="panel"><h2>Integrations</h2>
+  <div class="row">{% for name, on in integrations.items() %}<span class="chip {{ 'good' if on else '' }}">{{ '●' if on else '○' }} {{ name }}</span>{% endfor %}</div>
+  <p class="muted" style="font-size:13px">Configured through environment variables; see docs/configuration.md.</p></div>
+
+<div class="grid g2" style="margin-top:16px">
+<div class="panel"><h2>Mailboxes</h2>
+  <table><tr><th>From</th><th class="n">Per day</th><th>Window (UTC)</th><th>Replies</th><th></th></tr>
+  {% for m in mailboxes %}<tr><td>{{ m.from_name }}<div class="mono muted">{{ m.from_email }}</div></td><td class="n">{{ m.daily_limit }}</td>
+    <td>{{ m.window_start_hour }}:00-{{ m.window_end_hour }}:00{{ '' if m.send_weekends else ', weekdays' }}</td><td>{{ 'IMAP' if m.imap_host else '-' }}</td>
+    <td><form class="inline" method="post" action="/setup/mailboxes/{{ m.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Pause' if m.active else 'Resume' }}</button></form></td></tr>
+  {% else %}<tr><td colspan="5" class="muted">No mailboxes yet.</td></tr>{% endfor %}</table>
+  <details style="margin-top:12px"><summary>Add a mailbox</summary>
+  <form method="post" action="/setup/mailboxes"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>From email (on your verified Resend domain)</label><input name="from_email" type="email" required>
+    <label>From name</label><input name="from_name" required>
+    <label>Reply-to (optional)</label><input name="reply_to" type="email">
+    <div class="row"><div><label>Max per 24h</label><input name="daily_limit" type="number" value="30" min="1" max="500"></div>
+      <div><label>Min seconds between sends</label><input name="min_interval_seconds" type="number" value="120" min="30"></div></div>
+    <div class="row"><div><label>Window start hour (UTC)</label><input name="window_start_hour" type="number" value="8" min="0" max="23"></div>
+      <div><label>Window end hour (UTC)</label><input name="window_end_hour" type="number" value="17" min="1" max="24"></div></div>
+    <label>IMAP host for reply detection (optional)</label><input name="imap_host" placeholder="imap.gmail.com">
+    <label>IMAP user</label><input name="imap_user">
+    <label>Name of the env var holding the IMAP password</label><input name="imap_password_env" placeholder="IMAP_PASSWORD_SALES">
+    <p><button>Add mailbox</button></p></form></details>
+</div>
+<div class="panel"><h2>Sequences</h2>
+  {% for s in sequences %}<p><strong>{{ s.name }}</strong> <span class="chip {{ 'good' if s.active }}">{{ 'active' if s.active else 'off' }}</span>
+    <span class="muted">{{ s.steps|length }} steps:{% for st in s.steps %} {{ 'day 0' if st.position == 1 else '+' ~ (st.delay_hours // 24) ~ 'd' }}{% endfor %}</span>
+    <form class="inline" method="post" action="/setup/sequences/{{ s.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="ghost">{{ 'Turn off' if s.active else 'Turn on' }}</button></form></p>
+  {% else %}<p class="muted">No sequences yet.</p>{% endfor %}
+  <details><summary>Add a sequence</summary>
+  <form method="post" action="/setup/sequences"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>Name</label><input name="name" required>
+    <p class="muted" style="font-size:13px">Step 1 is written by the AI for each lead and approved by a person. Follow-ups below are templates;
+      you can use {{ '{{ first_name }}' }}, {{ '{{ company }}' }}, {{ '{{ title }}' }}. Leave the subject blank to reply in the same thread.</p>
+    {% for pos in range(2, 5) %}
+      <label>Step {{ pos }}: days after previous step</label><input name="delay_{{ pos }}" type="number" value="{{ 3 if pos == 2 else 5 }}" min="1">
+      <label>Step {{ pos }} subject (optional)</label><input name="subject_{{ pos }}">
+      <label>Step {{ pos }} body (leave empty to end the sequence here)</label><textarea name="body_{{ pos }}" style="min-height:90px"></textarea>
+    {% endfor %}
+    <p><button>Save sequence</button></p></form></details>
+</div>
+</div>
+{% endblock %}

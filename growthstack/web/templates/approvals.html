@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Approvals · growthstack{% endblock %}
+{% block content %}
+<h1>Approvals</h1>
+<p class="muted">Nothing is sent until a person approves it here. Edit freely: the compliance footer
+(where we found their details, our address, one-click unsubscribe) is added to every email automatically.</p>
+{% if not pending %}<div class="panel muted">No drafts waiting. Queue research from the <a href="/leads">Leads</a> page.</div>{% endif %}
+{% for e in pending %}{% set l = e.lead %}
+<div class="panel" style="margin-bottom:16px">
+  <div class="row">
+    <strong><a href="/leads/{{ l.id }}">{{ l.full_name }}</a></strong>
+    <span class="muted">{{ l.title or '' }}{{ ' at ' ~ l.company.name if l.company }}</span>
+    <span class="mono">{{ l.email }}</span>
+    <span class="spacer"></span>
+    <span class="chip">score {{ l.score if l.score is not none else '-' }}</span>
+    <span class="chip {{ 'good' if l.verification_status == 'valid' else 'warn' }}">email {{ l.verification_status or 'unchecked' }}</span>
+    <span class="chip">from {{ e.mailbox.from_email }}</span>
+  </div>
+  {% if l.research_summary %}<details style="margin-top:8px"><summary class="muted">Research notes</summary><pre class="wrap">{{ l.research_summary }}</pre></details>{% endif %}
+  <p class="muted" style="font-size:13px">Source shown to them: {{ l.source }} · {{ l.source_detail }}</p>
+  <form method="post" action="/approvals/{{ e.id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    {% for m in e.messages %}
+      {% set step = e.sequence.steps | selectattr('position','equalto', m.step_position) | first %}
+      <label>Step {{ m.step_position }}{% if m.step_position > 1 %} · sent {{ (step.delay_hours / 24)|round(1) }} days after step {{ m.step_position - 1 }}, only if no reply{% endif %} · subject</label>
+      <input name="subject_{{ m.step_position }}" value="{{ m.subject }}" maxlength="300">
+      <textarea name="body_{{ m.step_position }}" aria-label="Step {{ m.step_position }} body">{{ m.body_text }}</textarea>
+    {% endfor %}
+    <div class="row" style="margin-top:12px">
+      <button name="action" value="approve">Approve and queue</button>
+      <input name="reason" placeholder="Reason (if rejecting)" style="max-width:280px">
+      <button class="danger" name="action" value="reject">Reject</button>
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}

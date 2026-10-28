@@ -1,0 +1,70 @@
+<!--
+  PostHog + cookie banner for our marketing site (Stage 7 "Measure", Phase 1).
+
+  What it does
+  * Before the visitor chooses: PostHog runs with in-memory persistence only (no
+    cookies, no localStorage) and session recording OFF.
+  * "Accept": cookies + localStorage persistence, session recording starts.
+  * "Decline": PostHog stops capturing for this visitor.
+  * The choice is remembered (posthog stores it; we also hide the banner).
+
+  How to install
+  1. In PostHog: Project settings -> "Web snippet". Copy ONLY the loader part of
+     the official snippet (the minified `!function(t,e){...}` stub) and paste it
+     where marked below. Do not paste their posthog.init(...) call; ours is below.
+  2. Replace phc_REPLACE_ME with the project API key (it is public by design).
+  3. EU users: keep api_host as eu.i.posthog.com and make sure the project was
+     created in the EU region. Otherwise use https://us.i.posthog.com.
+  4. On successful signup call:
+        posthog.identify(user.id, { email: user.email, first_name: user.firstName })
+        posthog.capture('user_signed_up')
+     The event name must match POSTHOG_SIGNUP_EVENT in growthstack's config; the
+     hourly posthog_pull job turns these signups into leads and dashboard numbers.
+     Better: send `user_signed_up` from your backend (posthog-python) after the account
+     is really created. Browser events can be forged by anyone (the phc_ key is
+     public); growthstack therefore never lets a signup event change a lead that is
+     already being contacted.
+  Options used are from https://posthog.com/docs/libraries/js/config
+-->
+<script>
+  /* ==== paste PostHog's official loader stub here (step 1) ==== */
+</script>
+<script>
+  posthog.init('phc_REPLACE_ME', {
+    api_host: 'https://eu.i.posthog.com',
+    persistence: 'memory',            // no cookies until the visitor accepts
+    disable_session_recording: true,  // recordings only after consent
+    person_profiles: 'identified_only',
+  });
+
+  (function () {
+    var status = posthog.get_explicit_consent_status ? posthog.get_explicit_consent_status() : 'pending';
+    if (status === 'granted') { enableFull(); return; }
+    if (status === 'denied') { return; }
+
+    var banner = document.createElement('div');
+    banner.setAttribute('role', 'dialog');
+    banner.setAttribute('aria-label', 'Cookie preferences');
+    banner.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;max-width:560px;margin:0 auto;' +
+      'background:#1d1f1c;color:#fff;padding:16px;border-radius:10px;font:14px/1.5 system-ui,sans-serif;' +
+      'box-shadow:0 6px 24px rgba(0,0,0,.25);z-index:2147483647';
+    banner.innerHTML =
+      '<p style="margin:0 0 12px">We use cookies to understand how our site is used and to improve it, ' +
+      'including recordings of visits. You can say no and the site works the same.</p>' +
+      '<button type="button" data-c="yes" style="margin-right:8px;padding:8px 14px;border:0;border-radius:6px;background:#7cc39c;color:#0f1a14;cursor:pointer">Accept</button>' +
+      '<button type="button" data-c="no" style="padding:8px 14px;border:1px solid #888;border-radius:6px;background:transparent;color:#fff;cursor:pointer">Decline</button>';
+    banner.addEventListener('click', function (e) {
+      var choice = e.target && e.target.getAttribute('data-c');
+      if (!choice) return;
+      if (choice === 'yes') { posthog.opt_in_capturing(); enableFull(); }
+      else { posthog.opt_out_capturing(); }
+      banner.remove();
+    });
+    document.body.appendChild(banner);
+  })();
+
+  function enableFull() {
+    posthog.set_config({ persistence: 'localStorage+cookie' });
+    posthog.startSessionRecording();
+  }
+</script>
