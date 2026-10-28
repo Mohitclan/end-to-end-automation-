@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  growthstack newsletter template for listmonk (build day P5.07).
+  Paste into listmonk: Campaigns > Templates > New, type "Campaign".
+  Replace "Your Company" and https://yourcompany.com with the real name and site.
+  Required by listmonk: {{ template "content" . }} (the campaign body) and
+  {{ UnsubscribeURL }} (the unsubscribe link; listmonk_sync carries it into
+  growthstack's do-not-contact list). There's no {{ TrackView }} open-tracking pixel on purpose.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Campaign.Subject }}</title>
+  <style>
+    body { margin: 0; padding: 0; background: #f4f5f7; color: #1f2430;
+           font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           font-size: 16px; line-height: 1.6; }
+    .wrap { max-width: 600px; margin: 0 auto; padding: 24px 16px; }
+    .brand { font-size: 18px; font-weight: 700; color: #1f2430; text-decoration: none; }
+    .card { background: #ffffff; border-radius: 8px; padding: 32px 28px; margin-top: 16px; }
+    .card a { color: #2754c5; }
+    .card img { max-width: 100%; height: auto; }
+    .footer { color: #6b7280; font-size: 13px; text-align: center; padding: 20px 8px; }
+    .footer a { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="brand" href="https://yourcompany.com">Your Company</a>
+    <div class="card">
+      {{ template "content" . }}
+    </div>
+    <div class="footer">
+      <p>You're receiving this because you subscribed to Your Company's newsletter.</p>
+      <p>
+        <a href="{{ UnsubscribeURL }}">Unsubscribe</a>
+        &nbsp;·&nbsp;
+        <a href="{{ MessageURL }}">View in browser</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>

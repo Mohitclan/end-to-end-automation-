@@ -13,6 +13,8 @@ import respx
 
 from growthstack.config import Settings
 from growthstack.integrations.listmonk import ListmonkClient, ListmonkError, ListmonkRateLimitError
+from growthstack.integrations.live_check import check_listmonk, check_twenty
+from growthstack.integrations.live_check import main as live_check_main
 from growthstack.integrations.pagespeed import (
     API_URL as PSI_URL,
 )
@@ -31,7 +33,13 @@ from growthstack.integrations.search_console import (
     SearchConsoleError,
     SearchConsoleRateLimitError,
 )
-from growthstack.integrations.twenty import TwentyClient, TwentyError, TwentyRateLimitError, normalize_domain
+from growthstack.integrations.twenty import (
+    DEFAULT_STAGES,
+    TwentyClient,
+    TwentyError,
+    TwentyRateLimitError,
+    normalize_domain,
+)
 from growthstack.leads.companies_house import (
     CompaniesHouseClient,
     CompaniesHouseError,
@@ -50,8 +58,13 @@ TW = "https://crm.example.com/rest"
 
 
 @pytest.fixture
-def twenty():
-    return TwentyClient(TW, "tw-secret-key")
+def sleeps():
+    return []
+
+
+@pytest.fixture
+def twenty(sleeps):
+    return TwentyClient(TW, "tw-secret-key", sleep=sleeps.append)
 
 
 def test_twenty_from_settings():
@@ -61,20 +74,45 @@ def test_twenty_from_settings():
     assert isinstance(c, TwentyClient) and c.api_url == TW
 
 
-def test_normalize_domain():
-    assert normalize_domain("Example.com") == "https://example.com"
-    assert normalize_domain("http://example.com/about?x=1") == "https://example.com"
-    assert normalize_domain("https://example.com/") == "https://example.com"
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "twenty.com",
+        "TWENTY.com",
+        "www.twenty.com",
+        "https://twenty.com",
+        "https://www.twenty.com/",
+        "http://www.Twenty.com/careers?utm=1#team",
+        "  https://twenty.com  ",
+        "twenty.com.",
+        "twenty.com:8080",
+        "https://user:secret@www.twenty.com",
+        "www.www.twenty.com",
+        "twenty.com\\@evil.com",
+        "ftp://twenty.com",
+        "twenty.com/?next=https://other.com",
+    ],
+)
+def test_normalize_domain_matches_twenty(raw):
+    # The same cases as Twenty's own normalizeDomain tests (v2.52.0).
+    assert normalize_domain(raw) == "twenty.com"
+
+
+def test_normalize_domain_keeps_subdomains_and_folds_idn():
+    assert normalize_domain("https://blog.twenty.com") == "blog.twenty.com"
+    assert normalize_domain("https://München.de") == "xn--mnchen-3ya.de"
+    assert normalize_domain("https://") == ""
 
 
 @respx.mock
 def test_twenty_upsert_company_finds_existing(twenty):
     find = respx.get(f"{TW}/companies").respond(json={"data": {"companies": [{"id": "c-1"}]}})
     create = respx.post(f"{TW}/companies")
-    assert twenty.upsert_company("Acme", "acme.com") == "c-1"
+    assert twenty.upsert_company("Acme", "https://www.acme.com/") == "c-1"
     assert not create.called
     req = find.calls.last.request
-    assert req.url.params["filter"] == 'domainName.primaryLinkUrl[eq]:"https://acme.com"'
+    assert req.url.params["filter"] == 'domainName.primaryLinkUrl[eq]:"acme.com"'
+    assert req.url.params["limit"] == "1"
     assert req.headers["authorization"] == "Bearer tw-secret-key"
 
 
@@ -85,16 +123,40 @@ def test_twenty_upsert_company_creates(twenty):
     assert twenty.upsert_company("Acme", "www.acme.com/") == "c-2"
     assert json.loads(create.calls.last.request.content) == {
         "name": "Acme",
-        "domainName": {"primaryLinkUrl": "https://www.acme.com"},
+        "domainName": {"primaryLinkUrl": "acme.com"},
     }
 
 
 @respx.mock
-def test_twenty_upsert_company_without_domain_creates(twenty):
+def test_twenty_upsert_company_twice_finds_what_it_created(twenty):
+    """The live API stores the bare domain, so the second run must search for exactly that."""
+    stored: list[dict] = []
+
+    def find(request):
+        value = request.url.params["filter"].split(":", 1)[1].strip('"')
+        hits = [c for c in stored if c["domainName"]["primaryLinkUrl"] == value]
+        return httpx.Response(200, json={"data": {"companies": hits}})
+
+    def create(request):
+        body = json.loads(request.content)
+        stored.append({"id": f"c-{len(stored) + 1}", **body})
+        return httpx.Response(201, json={"data": {"createCompany": stored[-1]}})
+
+    respx.get(f"{TW}/companies").mock(side_effect=find)
+    respx.post(f"{TW}/companies").mock(side_effect=create)
+    first = twenty.upsert_company("Build Day Test Ltd", "buildday-test.example")
+    second = twenty.upsert_company("Build Day Test Ltd", "https://www.buildday-test.example/")
+    assert first == second == "c-1" and len(stored) == 1
+
+
+@respx.mock
+@pytest.mark.parametrize("domain", [None, "", "https://"])
+def test_twenty_upsert_company_without_domain_creates(twenty, domain):
     find = respx.get(f"{TW}/companies")
-    respx.post(f"{TW}/companies").respond(json={"data": {"createCompany": {"id": "c-3"}}})
-    assert twenty.upsert_company("No Domain Ltd") == "c-3"
+    create = respx.post(f"{TW}/companies").respond(json={"data": {"createCompany": {"id": "c-3"}}})
+    assert twenty.upsert_company("No Domain Ltd", domain) == "c-3"
     assert not find.called
+    assert json.loads(create.calls.last.request.content) == {"name": "No Domain Ltd"}
 
 
 @respx.mock
@@ -128,11 +190,17 @@ def test_twenty_upsert_person_creates_when_missing(twenty):
 
 
 @respx.mock
-def test_twenty_filter_escapes_double_quotes(twenty):
+def test_twenty_filter_quotes_without_escaping(twenty):
+    # Twenty strips the outer quotes and never unescapes, so backslashes go through as they are
+    # and a value with a double quote is wrapped in single quotes instead.
     find = respx.get(f"{TW}/people").respond(json={"data": {"people": []}})
     respx.post(f"{TW}/people").respond(json={"data": {"createPerson": {"id": "p"}}})
-    twenty.upsert_person('a"b\\c@x.com')
-    assert find.calls.last.request.url.params["filter"] == 'emails.primaryEmail[eq]:"a\\"b\\\\c@x.com"'
+    twenty.upsert_person("o'neil\\x@x.com")
+    assert find.calls.last.request.url.params["filter"] == "emails.primaryEmail[eq]:\"o'neil\\x@x.com\""
+    twenty.upsert_person('a"b@x.com')
+    assert find.calls.last.request.url.params["filter"] == "emails.primaryEmail[eq]:'a\"b@x.com'"
+    with pytest.raises(ValueError):
+        twenty.find_person_by_email("a\"b'c@x.com")
 
 
 @respx.mock
@@ -148,6 +216,29 @@ def test_twenty_create_opportunity(twenty):
 
 
 @respx.mock
+def test_twenty_reply_opportunity_at_screening(twenty):
+    # twenty_sync opens reply opportunities at SCREENING, one of Twenty's default stages.
+    route = respx.post(f"{TW}/opportunities").respond(json={"data": {"createOpportunity": {"id": "o-2"}}})
+    assert "SCREENING" in DEFAULT_STAGES
+    twenty.create_opportunity("Acme - outreach reply", "SCREENING", None, "p-1")
+    assert json.loads(route.calls.last.request.content) == {
+        "name": "Acme - outreach reply",
+        "stage": "SCREENING",
+        "pointOfContactId": "p-1",
+    }
+
+
+@respx.mock
+def test_twenty_renamed_stage_error_names_the_stage(twenty):
+    respx.post(f"{TW}/opportunities").respond(
+        400, json={"messages": ["Invalid value 'SCREENING' for field 'stage'"]}
+    )
+    with pytest.raises(TwentyError) as ei:
+        twenty.create_opportunity("x", "SCREENING")
+    assert ei.value.status_code == 400 and "SCREENING" in str(ei.value)
+
+
+@respx.mock
 def test_twenty_errors_never_include_key(twenty):
     respx.post(f"{TW}/opportunities").respond(401, json={"message": "bad token"})
     with pytest.raises(TwentyError) as ei:
@@ -157,11 +248,54 @@ def test_twenty_errors_never_include_key(twenty):
 
 
 @respx.mock
-def test_twenty_429(twenty):
-    respx.get(f"{TW}/people").respond(429, headers={"Retry-After": "30"})
+def test_twenty_429(twenty, sleeps):
+    route = respx.get(f"{TW}/people").respond(429, headers={"Retry-After": "30"})
     with pytest.raises(TwentyRateLimitError) as ei:
         twenty.find_person_by_email("a@b.com")
     assert ei.value.retry_after == 30.0 and ei.value.status_code == 429
+    assert sleeps == [30.0] and route.call_count == 2  # waited once, then gave up
+
+
+@respx.mock
+def test_twenty_429_retried_once(twenty, sleeps):
+    respx.get(f"{TW}/people").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "5"}),
+            httpx.Response(200, json={"data": {"people": [{"id": "p-1"}]}}),
+        ]
+    )
+    assert twenty.find_person_by_email("a@b.com") == {"id": "p-1"}
+    assert sleeps == [5.0]
+
+
+@respx.mock
+def test_twenty_429_long_wait_not_retried(twenty, sleeps):
+    route = respx.get(f"{TW}/people").respond(429, headers={"Retry-After": "600"})
+    with pytest.raises(TwentyRateLimitError):
+        twenty.find_person_by_email("a@b.com")
+    assert sleeps == [] and route.call_count == 1
+
+
+@respx.mock
+def test_twenty_paces_itself_under_the_rate_limit():
+    now = [0.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    client = TwentyClient(TW, "k", rate_limit=3, clock=lambda: now[0], sleep=sleep)
+    route = respx.get(f"{TW}/people").respond(json={"data": {"people": []}})
+    for _ in range(3):
+        client.find_person_by_email("a@b.com")
+        now[0] += 1.0
+    assert sleeps == []
+    client.find_person_by_email("a@b.com")  # 4th call inside the same minute waits for the 1st to age out
+    assert sleeps == [57.0] and route.call_count == 4
+    now[0] += 60.0
+    client.find_person_by_email("a@b.com")  # a fresh window: no wait
+    assert sleeps == [57.0]
 
 
 @respx.mock
@@ -477,13 +611,42 @@ def test_listmonk_blocklist_new(listmonk):
 @respx.mock
 def test_listmonk_blocklist_existing(listmonk, status, text):
     respx.post(f"{LM}/api/subscribers").respond(status, text=text)
-    find = respx.get(f"{LM}/api/subscribers").respond(json={"data": {"results": [{"id": 42, "email": "o'neil@x.com"}]}})
+    # listmonk's search also matches names, so a subscriber *named* like the address comes first here.
+    find = respx.get(f"{LM}/api/subscribers").respond(
+        json={"data": {"results": [{"id": 7, "email": "other@x.com", "name": "o'neil+1@x.com"},
+                                   {"id": 42, "email": "O'Neil+1@x.com"}]}}
+    )
     block = respx.put(f"{LM}/api/subscribers/42/blocklist").respond(json={"data": True})
-    listmonk.blocklist_email("o'neil@x.com")
+    listmonk.blocklist_email("o'neil+1@x.com")
     assert block.called
     params = find.calls.last.request.url.params
-    assert params["query"] == "subscribers.email='o''neil@x.com'"
-    assert params["per_page"] == "1"
+    # No SQL `query`: that needs the subscribers:sql_query permission.
+    assert "query" not in params
+    assert params["search"] == "^o'neil\\+1@x\\.com$"
+
+
+@respx.mock
+def test_listmonk_blocklist_already_blocklisted_is_a_no_op(listmonk):
+    respx.post(f"{LM}/api/subscribers").respond(409, text='{"message":"E-mail already exists."}')
+    respx.get(f"{LM}/api/subscribers").respond(
+        json={"data": {"results": [{"id": 7, "email": "gone@x.com", "status": "blocklisted", "lists": []}]}}
+    )
+    block = respx.put(f"{LM}/api/subscribers/7/blocklist")
+    listmonk.blocklist_email("gone@x.com")
+    assert not block.called
+
+
+@respx.mock
+def test_listmonk_blocklist_permission_error_raises(listmonk):
+    # What listmonk v6.2.0 answers when the role lacks lists:get_all and the subscriber is on no list.
+    respx.post(f"{LM}/api/subscribers").respond(409, text='{"message":"E-mail already exists."}')
+    respx.get(f"{LM}/api/subscribers").respond(
+        json={"data": {"results": [{"id": 6, "email": "a@x.com", "status": "enabled", "lists": []}]}}
+    )
+    respx.put(f"{LM}/api/subscribers/6/blocklist").respond(403, json={"message": "Permission denied: subscriber: 6"})
+    with pytest.raises(ListmonkError) as ei:
+        listmonk.blocklist_email("a@x.com")
+    assert ei.value.status_code == 403
 
 
 @respx.mock
@@ -502,20 +665,56 @@ def test_listmonk_blocklist_exists_but_not_found(listmonk):
         listmonk.blocklist_email("a@x.com")
 
 
+def _sub(email, status="enabled", lists=()):
+    return {"email": email, "status": status, "lists": [{"id": i, "subscription_status": s} for i, s in lists]}
+
+
+# Shaped like listmonk v6.2.0's GET /api/subscribers: every subscriber, with its status and lists.
+LM_SUBSCRIBERS = [
+    _sub("A@x.com", "blocklisted", [(1, "unsubscribed")]),
+    _sub("a@x.com", "blocklisted"),
+    _sub("keen@x.com", "enabled", [(1, "confirmed")]),
+    _sub("left-one@x.com", "enabled", [(1, "confirmed"), (2, "unsubscribed")]),
+    _sub("new@x.com", "enabled", [(1, "unconfirmed")]),
+    _sub("b@x.com", "blocklisted", [(2, "unsubscribed")]),
+]
+
+
+def _paged(subscribers):
+    def respond(request):
+        page, per_page = int(request.url.params["page"]), int(request.url.params["per_page"])
+        chunk = subscribers[(page - 1) * per_page : page * per_page]
+        return httpx.Response(
+            200, json={"data": {"results": chunk, "total": len(subscribers), "page": page, "per_page": per_page}}
+        )
+
+    return respond
+
+
 @respx.mock
-def test_listmonk_lists(listmonk):
-    route = respx.get(f"{LM}/api/subscribers").mock(
-        side_effect=[
-            httpx.Response(200, json={"data": {"results": [{"email": "A@x.com"}, {"email": "a@x.com"}, {"email": "b@x.com"}]}}),
-            httpx.Response(200, json={"data": {"results": []}}),
-        ]
-    )
+def test_listmonk_lists(listmonk, monkeypatch):
+    monkeypatch.setattr("growthstack.integrations.listmonk.PAGE_SIZE", 2)
+    route = respx.get(f"{LM}/api/subscribers").mock(side_effect=_paged(LM_SUBSCRIBERS))
     assert listmonk.blocklisted_emails() == ["a@x.com", "b@x.com"]
-    first = route.calls[0].request.url.params
-    assert first["query"] == "subscribers.status='blocklisted'" and first["per_page"] == "all"
+    assert route.call_count == 3  # 6 subscribers, 2 per page
+    assert listmonk.unsubscribed_emails() == ["a@x.com", "left-one@x.com", "b@x.com"]
+    for call in route.calls:
+        params = call.request.url.params
+        # Neither filter works on a real listmonk: `query` needs subscribers:sql_query, and
+        # subscription_status without list_id is ignored (it would return everyone).
+        assert "query" not in params and "subscription_status" not in params
+        assert params["order"] == "asc" and params["per_page"] == "2"
+    assert [c.request.url.params["page"] for c in route.calls[:3]] == ["1", "2", "3"]
+
+
+@respx.mock
+def test_listmonk_lists_empty_and_exact_page(listmonk, monkeypatch):
+    monkeypatch.setattr("growthstack.integrations.listmonk.PAGE_SIZE", 3)
+    route = respx.get(f"{LM}/api/subscribers").mock(side_effect=_paged(LM_SUBSCRIBERS[:3]))
+    assert listmonk.blocklisted_emails() == ["a@x.com"]
+    assert route.call_count == 1  # a full page that reaches `total` stops without an empty extra call
+    route.mock(side_effect=_paged([]))
     assert listmonk.unsubscribed_emails() == []
-    second = route.calls[1].request.url.params
-    assert second["subscription_status"] == "unsubscribed" and second["per_page"] == "all"
 
 
 @respx.mock
@@ -691,3 +890,102 @@ def test_hunter_empty_and_errors():
     with pytest.raises(HunterError) as ei:
         client.domain_search("acme.com")
     assert ei.value.status_code == 401 and "hu-secret" not in str(ei.value)
+
+
+# ------------------------------------------------------------- live checks
+class FakeTwenty:
+    """In-memory Twenty REST API with the v2.52.0 behaviours the client depends on:
+    bare-host company domains, lowercased emails, quoted-but-unescaped filter values."""
+
+    COLLECTIONS = {"companies": "Company", "people": "Person", "opportunities": "Opportunity"}
+
+    def __init__(self, stages=("NEW", "SCREENING", "MEETING", "PROPOSAL", "CUSTOMER")):
+        self.records = {c: {} for c in self.COLLECTIONS}
+        self.stages = stages
+        self.next_id = 0
+
+    @staticmethod
+    def _get(record, dotted):
+        for part in dotted.split("."):
+            record = (record or {}).get(part)
+        return record
+
+    def __call__(self, request):
+        parts = request.url.path.split("/rest/", 1)[1].split("/")
+        collection, record_id = parts[0], (parts[1] if len(parts) > 1 else None)
+        store = self.records[collection]
+        if request.method == "GET":
+            field, value = request.url.params["filter"].split("[eq]:", 1)
+            hits = [r for r in store.values() if self._get(r, field) == value[1:-1]]
+            return httpx.Response(200, json={"data": {collection: hits[: int(request.url.params["limit"])]}})
+        if request.method == "DELETE":
+            store.pop(record_id)
+            return httpx.Response(200, json={"data": {}})
+        body = json.loads(request.content)
+        if "domainName" in body:
+            body["domainName"]["primaryLinkUrl"] = normalize_domain(body["domainName"]["primaryLinkUrl"])
+        if "emails" in body:
+            body["emails"]["primaryEmail"] = body["emails"]["primaryEmail"].lower()
+        if body.get("stage") and body["stage"] not in self.stages:
+            return httpx.Response(400, json={"messages": [f"Invalid value '{body['stage']}' for field 'stage'"]})
+        verb = "update" if request.method == "PATCH" else "create"
+        if verb == "create":
+            self.next_id += 1
+            record_id = f"{collection[:3]}-{self.next_id}"
+            store[record_id] = {"id": record_id}
+        store[record_id].update(body)
+        return httpx.Response(200, json={"data": {f"{verb}{self.COLLECTIONS[collection]}": store[record_id]}})
+
+
+@respx.mock
+def test_live_check_twenty_passes_and_cleans_up(twenty, capsys):
+    fake = FakeTwenty()
+    respx.route(url__startswith=TW).mock(side_effect=fake)
+    assert check_twenty(twenty, "BuildDay-Test@yourcompany.com") is True
+    out = capsys.readouterr().out
+    assert "FAIL" not in out and "Deleted 3 test records." in out
+    assert all(not records for records in fake.records.values())
+
+
+@respx.mock
+def test_live_check_twenty_keep(twenty):
+    fake = FakeTwenty()
+    respx.route(url__startswith=TW).mock(side_effect=fake)
+    assert check_twenty(twenty, "t@x.com", keep=True) is True
+    assert [len(r) for r in fake.records.values()] == [1, 1, 1]
+    assert next(iter(fake.records["companies"].values()))["domainName"]["primaryLinkUrl"] == "buildday-test.example"
+
+
+@respx.mock
+def test_live_check_twenty_reports_renamed_stage(twenty, capsys):
+    fake = FakeTwenty(stages=("NEW", "QUALIFIED"))
+    respx.route(url__startswith=TW).mock(side_effect=fake)
+    assert check_twenty(twenty, "t@x.com") is False
+    out = capsys.readouterr().out
+    assert "FAIL create_opportunity at SCREENING" in out and "jobs/tasks.py" in out
+    assert all(not records for records in fake.records.values())
+
+
+@respx.mock
+def test_live_check_twenty_401_hint(twenty, capsys):
+    respx.route(url__startswith=TW).respond(401, json={"message": "Unauthorized"})
+    assert check_twenty(twenty, "t@x.com") is False
+    assert "ends in /rest" in capsys.readouterr().out
+
+
+@respx.mock
+def test_live_check_listmonk(listmonk, capsys):
+    respx.get(f"{LM}/api/subscribers").mock(side_effect=_paged(LM_SUBSCRIBERS))
+    assert check_listmonk(listmonk) is True
+    # A@x.com and a@x.com are one address.
+    assert "OK   read subscribers: 2 blocklisted, 3 unsubscribed from a list" in capsys.readouterr().out
+    respx.get(f"{LM}/api/subscribers").respond(403, json={"message": "permission denied"})
+    assert check_listmonk(listmonk) is False
+    assert "lists:get_all" in capsys.readouterr().out
+
+
+def test_live_check_not_configured(monkeypatch, capsys):
+    monkeypatch.setattr(TwentyClient, "from_settings", classmethod(lambda cls, s=None: None))
+    monkeypatch.setattr(ListmonkClient, "from_settings", classmethod(lambda cls, s=None: None))
+    assert live_check_main(["twenty"]) == 1 and live_check_main(["listmonk"]) == 1
+    assert "not configured" in capsys.readouterr().out
