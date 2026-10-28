@@ -211,7 +211,10 @@ async def run_worker(concurrency: int = 4) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:  # Windows event loop: Ctrl+C still stops the process
+            pass
     await stop.wait()
     log.info("worker stopping")
     for w in workers:
