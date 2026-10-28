@@ -19,11 +19,13 @@ from growthstack.db import Base
 
 @pytest.fixture
 def database(tmp_path, monkeypatch):
-    """A fresh SQLite database file per test (file, so every session sees the same data)."""
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+    """A fresh database per test: a SQLite file, or the schema on TEST_DATABASE_URL when it is set."""
+    url = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setenv("LANGGRAPH_CHECKPOINT_PATH", str(tmp_path / "checkpoints.sqlite"))
     get_settings.cache_clear()
-    engine = dbmod.configure(f"sqlite:///{tmp_path / 'test.db'}")
+    engine = dbmod.configure(url)
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()

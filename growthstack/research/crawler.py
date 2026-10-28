@@ -393,10 +393,9 @@ class Crawl4AIClient:
                 "type": "CrawlerRunConfig",
                 "params": {
                     "check_robots_txt": True,
-                    "magic": False,
-                    # explicit: the server's config.yml turns simulate_user on when absent
-                    "simulate_user": False,
-                    "override_navigator": False,
+                    # Crawl4AI 0.9.2 rejects magic / simulate_user / override_navigator from
+                    # untrusted requests, so anti-bot stays off in the server's config.yml
+                    # (crawler.base_config.simulate_user: false), not in this request.
                     "cache_mode": "bypass",
                 },
             },

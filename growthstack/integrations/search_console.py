@@ -6,6 +6,7 @@ so callers should end their date range at ``date.today() - timedelta(days=3)``."
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from growthstack.config import Settings, get_settings
@@ -54,7 +55,7 @@ class SearchConsoleClient:
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> SearchConsoleClient | None:
         s = settings or get_settings()
-        if not s.gsc_site_url or not s.gsc_service_account_file:
+        if not s.gsc_site_url or not s.gsc_service_account_file or not Path(s.gsc_service_account_file).is_file():
             return None
         return cls(s.gsc_site_url, service_account_file=s.gsc_service_account_file)
 
