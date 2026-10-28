@@ -23,6 +23,7 @@ from growthstack.models import (
     Lead,
     LeadStage,
     Mailbox,
+    OutboundMessage,
     ResearchStatus,
     Sequence,
     SequenceStep,
@@ -47,6 +48,55 @@ def _flash(request: Request, message: str, kind: str = "ok") -> None:
 
 def _back(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
+
+
+OPEN_ENROLLMENT = (EnrollmentStatus.PENDING_APPROVAL, EnrollmentStatus.ACTIVE)
+MAX_FOLLOW_UP_POSITION = 5
+
+
+def _mailbox_fields(form) -> tuple[dict | None, str | None]:
+    """Validate the mailbox form shared by add and edit. Returns (fields, error)."""
+    try:
+        f = {
+            "from_email": str(form.get("from_email") or "").strip().lower(),
+            "from_name": str(form.get("from_name") or "").strip(),
+            "reply_to": str(form.get("reply_to") or "").strip() or None,
+            "daily_limit": int(form.get("daily_limit") or 30),
+            "min_interval_seconds": max(30, int(form.get("min_interval_seconds") or 120)),
+            "window_start_hour": int(form.get("window_start_hour") or 8),
+            "window_end_hour": int(form.get("window_end_hour") or 17),
+            "send_weekends": bool(form.get("send_weekends")),
+            "imap_host": str(form.get("imap_host") or "").strip() or None,
+            "imap_user": str(form.get("imap_user") or "").strip() or None,
+            "imap_password_env": str(form.get("imap_password_env") or "").strip() or None,
+        }
+    except ValueError:
+        return None, "Limits and hours must be whole numbers."
+    if not f["from_email"] or not f["from_name"]:
+        return None, "From email and from name are required."
+    if not (0 <= f["window_start_hour"] < f["window_end_hour"] <= 24) or not (1 <= f["daily_limit"] <= 500):
+        return None, "Check the sending window (0-24, start before end) and daily limit (1-500)."
+    return f, None
+
+
+def _follow_up_steps(form) -> tuple[list[SequenceStep] | None, str | None]:
+    """Parse follow-up steps 2..5 from the sequence form; stops at the first empty body."""
+    steps = []
+    for pos in range(2, MAX_FOLLOW_UP_POSITION + 1):
+        body = str(form.get(f"body_{pos}") or "").strip()
+        if not body:
+            break
+        try:
+            delay_days = max(1, int(form.get(f"delay_{pos}") or 3))
+        except ValueError:
+            delay_days = 3
+        subject = str(form.get(f"subject_{pos}") or "").strip()
+        try:
+            sequencer._template_env.from_string(subject + body)  # validate syntax early
+        except Exception as exc:
+            return None, f"Step {pos} template error: {exc}"
+        steps.append(SequenceStep(position=pos, delay_hours=delay_days * 24, subject_template=subject, body_template=body))
+    return steps, None
 
 
 def create_app() -> FastAPI:
@@ -429,35 +479,63 @@ def _routes(app: FastAPI) -> None:  # noqa: C901 - flat list of routes reads bes
         )
 
     @app.post("/setup/mailboxes", dependencies=csrf)
-    def add_mailbox(
-        request: Request,
-        from_email: str = Form(...),
-        from_name: str = Form(...),
-        reply_to: str = Form(""),
-        daily_limit: int = Form(30),
-        min_interval_seconds: int = Form(120),
-        window_start_hour: int = Form(8),
-        window_end_hour: int = Form(17),
-        imap_host: str = Form(""),
-        imap_user: str = Form(""),
-        imap_password_env: str = Form(""),
-        user: User = Depends(auth.require_user),
-        db: Session = Depends(get_db),
-    ):
-        if not (0 <= window_start_hour < window_end_hour <= 24) or not (1 <= daily_limit <= 500):
-            _flash(request, "Check the sending window (0-24, start before end) and daily limit (1-500).", "error")
+    async def add_mailbox(request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        fields, error = _mailbox_fields(await request.form())
+        if error:
+            _flash(request, error, "error")
             return _back("/setup")
-        db.add(
-            Mailbox(
-                from_email=from_email.strip().lower(), from_name=from_name.strip(), reply_to=reply_to.strip() or None,
-                daily_limit=daily_limit, min_interval_seconds=max(30, min_interval_seconds),
-                window_start_hour=window_start_hour, window_end_hour=window_end_hour,
-                imap_host=imap_host.strip() or None, imap_user=imap_user.strip() or None,
-                imap_password_env=imap_password_env.strip() or None,
-            )
-        )
+        if db.scalar(select(Mailbox.id).where(Mailbox.from_email == fields["from_email"])):
+            _flash(request, f"{fields['from_email']} is already a mailbox.", "error")
+            return _back("/setup")
+        db.add(Mailbox(**fields))
         db.commit()
         _flash(request, "Mailbox added.")
+        return _back("/setup")
+
+    @app.get("/setup/mailboxes/{mailbox_id}/edit", response_class=HTMLResponse)
+    def edit_mailbox_page(mailbox_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        mailbox = db.get(Mailbox, mailbox_id)
+        if not mailbox:
+            raise HTTPException(404)
+        return _render(request, "mailbox_edit.html", user, m=mailbox, in_use=_mailbox_open_enrollments(db, mailbox_id))
+
+    @app.post("/setup/mailboxes/{mailbox_id}/edit", dependencies=csrf)
+    async def edit_mailbox(mailbox_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        mailbox = db.get(Mailbox, mailbox_id)
+        if not mailbox:
+            raise HTTPException(404)
+        fields, error = _mailbox_fields(await request.form())
+        if error:
+            _flash(request, error, "error")
+            return _back(f"/setup/mailboxes/{mailbox_id}/edit")
+        taken = db.scalar(select(Mailbox.id).where(Mailbox.from_email == fields["from_email"], Mailbox.id != mailbox_id))
+        if taken:
+            _flash(request, f"{fields['from_email']} is already another mailbox.", "error")
+            return _back(f"/setup/mailboxes/{mailbox_id}/edit")
+        for key, value in fields.items():
+            setattr(mailbox, key, value)
+        db.commit()
+        _flash(request, f"Mailbox {mailbox.from_email} saved.")
+        return _back("/setup")
+
+    @app.post("/setup/mailboxes/{mailbox_id}/delete", dependencies=csrf)
+    def delete_mailbox(mailbox_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        mailbox = db.get(Mailbox, mailbox_id)
+        if not mailbox:
+            return _back("/setup")
+        if _mailbox_open_enrollments(db, mailbox_id):
+            _flash(request, f"{mailbox.from_email} is used by active or pending outreach, so it can't be deleted. Pause it instead.", "error")
+            return _back("/setup")
+        # Finished enrollments and sent messages still point at the mailbox; keep that history.
+        has_history = db.scalar(select(Enrollment.id).where(Enrollment.mailbox_id == mailbox_id).limit(1)) or db.scalar(
+            select(OutboundMessage.id).where(OutboundMessage.mailbox_id == mailbox_id).limit(1)
+        )
+        if has_history:
+            _flash(request, f"{mailbox.from_email} has sending history, so it can't be deleted. Pause it instead.", "error")
+            return _back("/setup")
+        db.delete(mailbox)
+        db.commit()
+        _flash(request, f"Mailbox {mailbox.from_email} deleted.")
         return _back("/setup")
 
     @app.post("/setup/mailboxes/{mailbox_id}/toggle", dependencies=csrf)
@@ -475,23 +553,16 @@ def _routes(app: FastAPI) -> None:  # noqa: C901 - flat list of routes reads bes
         if not name:
             _flash(request, "Give the sequence a name.", "error")
             return _back("/setup")
+        follow_ups, error = _follow_up_steps(form)
+        if error:
+            _flash(request, error, "error")
+            return _back("/setup")
+        if db.scalar(select(Sequence.id).where(Sequence.name == name)):
+            _flash(request, f"A sequence called '{name}' already exists.", "error")
+            return _back("/setup")
         seq = Sequence(name=name)
         seq.steps.append(SequenceStep(position=1, delay_hours=0, subject_template="", body_template="(written by the AI and approved per lead)"))
-        for pos in range(2, 6):
-            body = str(form.get(f"body_{pos}") or "").strip()
-            if not body:
-                break
-            try:
-                delay_days = max(1, int(form.get(f"delay_{pos}") or 3))
-            except ValueError:
-                delay_days = 3
-            subject = str(form.get(f"subject_{pos}") or "").strip()
-            try:
-                sequencer._template_env.from_string(subject + body)  # validate syntax early
-            except Exception as exc:
-                _flash(request, f"Step {pos} template error: {exc}", "error")
-                return _back("/setup")
-            seq.steps.append(SequenceStep(position=pos, delay_hours=delay_days * 24, subject_template=subject, body_template=body))
+        seq.steps.extend(follow_ups)
         db.add(seq)
         db.commit()
         _flash(request, f"Sequence '{name}' saved with {len(seq.steps)} steps.")
@@ -504,6 +575,76 @@ def _routes(app: FastAPI) -> None:  # noqa: C901 - flat list of routes reads bes
             seq.active = not seq.active
             db.commit()
         return _back("/setup")
+
+    @app.get("/setup/sequences/{sequence_id}/edit", response_class=HTMLResponse)
+    def edit_sequence_page(sequence_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        seq = db.get(Sequence, sequence_id)
+        if not seq:
+            raise HTTPException(404)
+        steps = {st.position: st for st in seq.steps}
+        return _render(request, "sequence_edit.html", user, s=seq, steps=steps,
+                       positions=range(2, MAX_FOLLOW_UP_POSITION + 1), in_use=_sequence_in_use(db, sequence_id))
+
+    @app.post("/setup/sequences/{sequence_id}/edit", dependencies=csrf)
+    async def edit_sequence(sequence_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        seq = db.get(Sequence, sequence_id)
+        if not seq:
+            raise HTTPException(404)
+        here = f"/setup/sequences/{sequence_id}/edit"
+        form = await request.form()
+        name = str(form.get("name") or "").strip()
+        if not name:
+            _flash(request, "Give the sequence a name.", "error")
+            return _back(here)
+        if db.scalar(select(Sequence.id).where(Sequence.name == name, Sequence.id != sequence_id)):
+            _flash(request, f"A sequence called '{name}' already exists.", "error")
+            return _back(here)
+        follow_ups, error = _follow_up_steps(form)
+        if error:
+            _flash(request, error, "error")
+            return _back(here)
+        existing = {st.position: st for st in seq.steps if st.position > 1}
+        new_positions = {st.position for st in follow_ups}
+        # Enrolled leads already hold a message per step and the sender looks up each
+        # step's delay when scheduling it, so steps can't be removed while in use.
+        if set(existing) - new_positions and _sequence_in_use(db, sequence_id):
+            _flash(request, "Leads are enrolled in this sequence, so its steps can't be removed. Edit them, or turn the sequence off and add a new one.", "error")
+            return _back(here)
+        seq.name = name
+        for step in follow_ups:
+            if step.position in existing:
+                old = existing[step.position]
+                old.delay_hours, old.subject_template, old.body_template = step.delay_hours, step.subject_template, step.body_template
+            else:
+                seq.steps.append(step)
+        for pos in set(existing) - new_positions:
+            seq.steps.remove(existing[pos])
+        db.commit()
+        _flash(request, f"Sequence '{name}' saved. Changes apply to new drafts only.")
+        return _back("/setup")
+
+    @app.post("/setup/sequences/{sequence_id}/delete", dependencies=csrf)
+    def delete_sequence(sequence_id: int, request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        seq = db.get(Sequence, sequence_id)
+        if not seq:
+            return _back("/setup")
+        if _sequence_in_use(db, sequence_id):
+            _flash(request, f"Leads have been enrolled in '{seq.name}', so it can't be deleted. Turn it off instead.", "error")
+            return _back("/setup")
+        db.delete(seq)
+        db.commit()
+        _flash(request, f"Sequence '{seq.name}' deleted.")
+        return _back("/setup")
+
+
+def _mailbox_open_enrollments(db: Session, mailbox_id: int) -> int:
+    return db.scalar(
+        select(func.count(Enrollment.id)).where(Enrollment.mailbox_id == mailbox_id, Enrollment.status.in_(OPEN_ENROLLMENT))
+    ) or 0
+
+
+def _sequence_in_use(db: Session, sequence_id: int) -> bool:
+    return db.scalar(select(Enrollment.id).where(Enrollment.sequence_id == sequence_id).limit(1)) is not None
 
 
 app = create_app()
