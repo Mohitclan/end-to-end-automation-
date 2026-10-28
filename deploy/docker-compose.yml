@@ -15,44 +15,35 @@
 # the cloud metadata address (169.254.169.254) for containers with a host firewall rule
 # or an egress proxy; Docker networks alone don't stop that.
 x-app-env: &app-env
-  ENVIRONMENT: production
-  SESSION_COOKIE_SECURE: "true"
-  DATABASE_URL: postgresql+psycopg://growthstack:${POSTGRES_PASSWORD}@postgres:5432/growthstack
+  ENVIRONMENT: development  # local run; production refuses http BASE_URL and the fake LLM
+  SESSION_COOKIE_SECURE: "false"
+  DATABASE_URL: sqlite:////data/growthstack.db
   REDIS_URL: redis://redis:6379/0
   CRAWL4AI_URL: http://crawl4ai:11235
+  DATA_DIR: /data  # container path; the .env value is a host-relative path
 
 services:
   web:
     build: { context: .., dockerfile: deploy/Dockerfile }
-    env_file: .env
+    env_file: ../.env
     environment:
       <<: *app-env
-      # The reverse proxy's address as seen from this container; never "*".
-      FORWARDED_ALLOW_IPS: ${PROXY_IP:?set PROXY_IP to the reverse proxy address}
+      # Local run: no reverse proxy in front of web.
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
     networks: [app]
     ports: ["127.0.0.1:8000:8000"]
     volumes: [data:/data]
-    depends_on: [postgres, redis]
+    depends_on: [redis]
     restart: unless-stopped
 
   worker:
     build: { context: .., dockerfile: deploy/Dockerfile }
     command: ["growthstack", "worker"]
-    env_file: .env
+    env_file: ../.env
     environment: *app-env
     networks: [app, crawl]
     volumes: [data:/data]
-    depends_on: [postgres, redis]
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: growthstack
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      POSTGRES_DB: growthstack
-    networks: [app]
-    volumes: [pg:/var/lib/postgresql/data]
+    depends_on: [redis]
     restart: unless-stopped
 
   redis:
@@ -75,4 +66,4 @@ networks:
   app: {}
   crawl: {}
 
-volumes: { data: {}, pg: {}, redis: {} }
+volumes: { data: {}, redis: {} }
