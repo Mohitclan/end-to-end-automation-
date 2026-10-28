@@ -478,6 +478,13 @@ def test_gsc_from_settings_not_configured():
     assert SearchConsoleClient.from_settings(make_settings(gsc_site_url="sc-domain:x.com")) is None
 
 
+def test_gsc_from_settings_missing_key_file(tmp_path):
+    missing = str(tmp_path / "no-such-key.json")
+    assert SearchConsoleClient.from_settings(
+        make_settings(gsc_site_url="sc-domain:x.com", gsc_service_account_file=missing)
+    ) is None
+
+
 def test_gsc_daily_totals():
     svc = FakeService(
         {
