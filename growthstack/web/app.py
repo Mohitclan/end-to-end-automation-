@@ -248,6 +248,26 @@ def _routes(app: FastAPI) -> None:  # noqa: C901 - flat list of routes reads bes
         db.commit()
         return _back(f"/leads/{lead_id}")
 
+    @app.post("/leads/{lead_id}/company-domain", dependencies=csrf)
+    def set_company_domain(lead_id: int, request: Request, domain: str = Form(""), user: User = Depends(auth.require_user), db: Session = Depends(get_db)):
+        # Companies House gives no website, so a person adds it here; Hunter and research then use it.
+        from growthstack.leads.importer import normalize_domain
+
+        lead = db.get(Lead, lead_id)
+        if not lead or not lead.company:
+            raise HTTPException(404)
+        bare = normalize_domain(domain)
+        taken = bare and db.scalar(select(Company).where(Company.domain == bare, Company.id != lead.company.id))
+        if not bare:
+            _flash(request, "That doesn't look like a website domain, e.g. acme.co.uk", "error")
+        elif taken:
+            _flash(request, f"{bare} already belongs to {taken.name}.", "error")
+        else:
+            lead.company.domain = bare
+            db.commit()
+            _flash(request, f"Website set to {bare}.")
+        return _back(f"/leads/{lead_id}")
+
     # --- import ---------------------------------------------------------------
     @app.get("/import", response_class=HTMLResponse)
     def import_page(request: Request, user: User = Depends(auth.require_user), db: Session = Depends(get_db)):

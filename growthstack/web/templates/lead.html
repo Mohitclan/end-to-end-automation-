@@ -16,6 +16,10 @@
       <tr><td class="muted">Title</td><td>{{ lead.title or '-' }}</td></tr>
       <tr><td class="muted">Company</td><td>{{ lead.company.name if lead.company else '-' }}{% if lead.company and lead.company.domain %} <span class="mono muted">{{ lead.company.domain }}</span>{% endif %}</td></tr>
       <tr><td class="muted">Website</td><td class="mono">{{ lead.website or '-' }}</td></tr>
+      {% if lead.company %}<tr><td class="muted">Company website</td><td>
+        <form class="row" method="post" action="/leads/{{ lead.id }}/company-domain"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input name="domain" value="{{ lead.company.domain or '' }}" placeholder="acme.co.uk" aria-label="Company website domain" style="width:auto;flex:1">
+          <button class="ghost">Save</button></form></td></tr>{% endif %}
       <tr><td class="muted">Source</td><td>{{ lead.source }}: {{ lead.source_detail }}<div class="muted" style="font-size:12px">lawful basis: {{ lead.lawful_basis.replace('_',' ') }} · imported by {{ lead.imported_by or 'system' }} on {{ lead.created_at|dt }}</div></td></tr>
       <tr><td class="muted">Email check</td><td>{{ lead.verification_status or 'not checked' }}{% if lead.verification and lead.verification.reasons %} <span class="muted">({{ lead.verification.reasons|join(', ') }})</span>{% endif %}{% if lead.verification and lead.verification.suggestion %} · did you mean <span class="mono">{{ lead.verification.suggestion }}</span>?{% endif %}</td></tr>
       <tr><td class="muted">CRM</td><td>{{ 'in Twenty' if lead.twenty_person_id else 'not synced yet' }}</td></tr>

@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from growthstack import dnc
 from growthstack.db import SessionLocal
 from growthstack.models import (
+    Company,
     DoNotContact,
     EmailEvent,
     EnrollmentStatus,
@@ -217,6 +218,34 @@ def test_csv_upload_from_ui(client):
     assert r.status_code == 200 and "Imported 1 new" in r.text
     with SessionLocal() as s:
         assert s.query(Lead).filter_by(email="ann@co.io").one().imported_by == "me@us.com"
+
+
+def test_company_domain_from_lead_page_enables_hunter(client, monkeypatch, seeded):
+    monkeypatch.setenv("HUNTER_API_KEY", "test-hunter-key")
+    from growthstack.config import get_settings
+
+    get_settings.cache_clear()
+    with SessionLocal() as s:  # a Companies House director: company with no domain, no email
+        lead = Lead(first_name="Raj", last_name="Patel", title="Director", source="companies_house",
+                    source_detail="Companies House register, company 01234567",
+                    company=Company(name="Beta Software Ltd", companies_house_number="01234567"))
+        s.add(lead)
+        s.commit()
+        lead_id = lead.id
+    token = _login(client)
+    assert "Beta Software Ltd" not in client.get("/import").text
+
+    r = client.post(f"/leads/{lead_id}/company-domain",
+                    data={"csrf_token": token, "domain": "https://www.Beta-Software.co.uk/about"})
+    assert r.status_code == 200 and "Website set to beta-software.co.uk" in r.text
+    assert "Beta Software Ltd (beta-software.co.uk)" in client.get("/import").text
+
+    r = client.post(f"/leads/{lead_id}/company-domain", data={"csrf_token": token, "domain": "not a domain"})
+    assert "doesn&#39;t look like a website domain" in r.text
+    r = client.post(f"/leads/{lead_id}/company-domain", data={"csrf_token": token, "domain": "acme.io"})
+    assert "acme.io already belongs to Acme Ltd" in r.text
+    with SessionLocal() as s:
+        assert s.get(Lead, lead_id).company.domain == "beta-software.co.uk"
 
 
 def test_setup_mailbox_validation(client):
