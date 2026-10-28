@@ -1,0 +1,6 @@
+# Local only (excluded from git via .git/info/exclude).
+# Mounts a Crawl4AI config with simulate_user off, to match the stealth/anti-bot-off rule (requirements S2.1).
+services:
+  crawl4ai:
+    volumes:
+      - ./crawl4ai-config.yml:/app/config.yml:ro
