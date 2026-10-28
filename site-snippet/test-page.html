@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>growthstack snippet test page</title>
+</head>
+<body style="font:16px/1.5 system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px">
+<h1>Snippet test page</h1>
+<p>Local test page for the cookie banner check (task P2.02). It runs
+<code>posthog-consent.html</code> from this folder exactly as the website will. Serve it with:</p>
+<pre>python3 -m http.server 8790 --bind 127.0.0.1 -d site-snippet</pre>
+<p>then open <code>http://127.0.0.1:8790/test-page.html</code> in a private window.
+Events go to the real PostHog project, marked with this localhost URL.</p>
+<script>
+  // Run the snippet's <script> blocks in order, as if pasted before </body>.
+  fetch('posthog-consent.html').then(function (r) { return r.text(); }).then(function (html) {
+    var holder = document.createElement('div');
+    holder.innerHTML = html;
+    holder.querySelectorAll('script').forEach(function (old) {
+      var s = document.createElement('script');
+      s.textContent = old.textContent;
+      document.body.appendChild(s);
+    });
+  });
+</script>
+</body>
+</html>

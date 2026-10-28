@@ -107,7 +107,7 @@ def test_signup_event_does_not_touch_active_lead(database, monkeypatch):
         def daily_event_counts(self, *a, **k): return {}
         def daily_unique_visitors(self, *a, **k): return {}
         def recent_signups(self, *a, **k): return [{"email": "busy@co.io"}, {"email": "fresh@co.io"}]
-        def person_event_count(self, *a, **k): return 0
+        def person_event_counts(self, *a, **k): return {}
 
     monkeypatch.setattr(PostHogQueryClient, "from_settings", classmethod(lambda cls, settings=None: Fake()))
     tasks.posthog_pull()

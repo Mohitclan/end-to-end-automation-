@@ -84,8 +84,9 @@ def test_posthog_pull_imports_signups_and_engagement(database, monkeypatch):
         def recent_signups(self, event, since):
             return [{"email": "New@Startup.io", "first_name": "Nia", "last_name": None}, {"email": None}]
 
-        def person_event_count(self, email, days):
-            return 7 if email == "active@co.io" else 1
+        def person_event_counts(self, emails, days):
+            assert days == 30
+            return {e.lower(): (7 if e.lower() == "active@co.io" else 1) for e in emails}
 
     _patch(monkeypatch, "growthstack.integrations.posthog_client", "PostHogQueryClient", Fake())
     out = tasks.posthog_pull()
