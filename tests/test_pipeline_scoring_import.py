@@ -229,3 +229,54 @@ def test_resume_falls_back_when_checkpoint_missing(graph, seeded, monkeypatch):
         s.commit()
         eid = s.query(Enrollment).one().id
     assert pipeline.resume_review(eid, {"action": "approve", "by": "me@us.com"}, graph=graph) == "approved"
+
+
+GOOD_DRAFT = "Hi Jane,\n\nSaw that Acme builds software for logistics teams.\n\nWould a short chat be useful?\n\nAlex"
+
+
+def test_draft_problems_flags_mechanical_misses():
+    assert pipeline.draft_problems(GOOD_DRAFT, "Jane", "Acme Ltd") == []
+    long_linked = "Hi Jane, " + "word " * 130 + "see https://us.example.com or **this**?\n\nAlex"
+    problems = " | ".join(pipeline.draft_problems(long_linked, "Jane", "Acme Ltd"))
+    assert "words" in problems and "link" in problems and "markdown" in problems and "name Acme Ltd" in problems
+    no_question = "Hi there,\n\nAcme looks great. Let me know.\n\nAlex"
+    problems = " | ".join(pipeline.draft_problems(no_question, "Jane", "Acme Ltd"))
+    assert "greet Jane" in problems and "one low-pressure question" in problems
+    assert pipeline.draft_problems("Hi Jane, ACME looks busy. Worth a chat?\nAlex", "Jane", "The Acme Ltd") == []
+
+
+class _ScriptedLLM(FakeLLM):
+    """FakeLLM for analysis; draft calls return the scripted bodies in turn."""
+
+    def __init__(self, bodies):
+        self.bodies, self.draft_prompts = list(bodies), []
+
+    def json(self, *, system, prompt, schema):
+        if "subject" not in schema["properties"]:
+            return super().json(system=system, prompt=prompt, schema=schema)
+        self.draft_prompts.append(prompt)
+        return {"subject": "Logistics software", "body": self.bodies.pop(0)}
+
+
+@pytest.mark.parametrize("bodies,calls", [([GOOD_DRAFT], 1), (["Hi Jane, visit www.us.com today.", GOOD_DRAFT], 2)])
+def test_draft_is_rewritten_once_when_checks_fail(database, tmp_path, seeded, monkeypatch, bodies, calls):
+    monkeypatch.setenv("MIN_SCORE_TO_DRAFT", "0")
+    from growthstack.config import get_settings
+    from growthstack.research import crawler
+    from growthstack.verify import email_verifier
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(crawler, "fetch_site_text", lambda url, settings=None: ResearchResult(
+        url=url, text="Acme builds software for logistics teams.", provider="test"))
+    monkeypatch.setattr(email_verifier, "verify_email", lambda email, **kw: type(
+        "R", (), {"to_dict": lambda self: {"status": "valid", "reasons": []}})())
+    llm = _ScriptedLLM(bodies)
+    conn = sqlite3.connect(str(tmp_path / "cp.sqlite"), check_same_thread=False)
+    pipeline.run_for_lead(seeded["lead"].id, graph=pipeline.build_graph(llm, SqliteSaver(conn)))
+    conn.close()
+    assert len(llm.draft_prompts) == calls
+    if calls == 2:
+        assert "<previous_draft>Hi Jane, visit www.us.com today.</previous_draft>" in llm.draft_prompts[1]
+        assert "link or web address" in llm.draft_prompts[1]
+    with SessionLocal() as s:
+        assert s.query(Enrollment).one().messages[0].body_text == GOOD_DRAFT
