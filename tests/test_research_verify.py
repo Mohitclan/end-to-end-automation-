@@ -147,9 +147,8 @@ def test_crawl4ai_request_body_and_fit_markdown():
     params = body["crawler_config"]["params"]
     assert body["crawler_config"]["type"] == "CrawlerRunConfig"
     assert params["check_robots_txt"] is True
-    assert params["simulate_user"] is False
-    assert params["magic"] is False
-    assert params["override_navigator"] is False
+    # The server rejects these from untrusted requests; anti-bot stays off in its config.yml.
+    assert not {"simulate_user", "magic", "override_navigator"} & params.keys()
     assert params["cache_mode"] == "bypass"
 
 
