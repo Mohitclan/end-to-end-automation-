@@ -58,7 +58,19 @@ Run Twenty from its official Docker Compose, unchanged (needs 2 GB+ RAM, Postgre
 In Twenty: Settings → APIs → create a key. Then `TWENTY_API_URL=https://crm.yourdomain.com/rest`
 and `TWENTY_API_KEY=...`. Every 5 minutes new leads are pushed as People (with their
 Company), and a reply opens an Opportunity at stage `SCREENING`. Twenty's API allows 100
-requests/minute; the job works in batches of 50.
+requests/minute; the job works in batches of 50, and the client paces itself to 90
+requests a minute (it waits out one 429 of up to 60 s, then leaves the rest for the next run).
+
+The client was checked against Twenty v2.52.0's server code. Company domains are matched
+on the bare host Twenty stores (`https://www.Acme.com/about` is saved as `acme.com`), and
+emails in lower case, so a second run finds the same records instead of creating
+duplicates. If the workspace renamed the default stages, use its real stage value in
+`growthstack/jobs/tasks.py`.
+
+Check the client against the live API (it runs every method twice on test records,
+then deletes them; `--keep` leaves them):
+
+    docker compose exec worker python -m growthstack.integrations.live_check twenty
 
 ## Analytics: PostHog Cloud (Stage 7)
 
@@ -90,7 +102,24 @@ requests/minute; the job works in batches of 50.
 
 ## Newsletters: listmonk (Phase 3)
 
-Run listmonk unchanged as its own service (single binary + Postgres). Create an API user,
+Run listmonk unchanged as its own service (single binary + Postgres), using the latest
+stable release (v6.2.0 at the time of writing, not a beta). Create an API user,
 then `LISTMONK_URL`, `LISTMONK_API_USER`, `LISTMONK_API_TOKEN`. Hourly, every
 do-not-contact address is blocklisted in listmonk, and listmonk's unsubscribes and
 blocklist come back into the do-not-contact list.
+
+The API user's role needs `subscribers:get_all` (to see subscribers on no list, such as the
+ones growthstack blocklists) and `subscribers:manage`. It doesn't need
+`subscribers:sql_query`, because the client never sends a SQL `query`. To read
+unsubscribes, the client pages through every subscriber and reads each one's `status` and
+per-list `subscription_status`. listmonk ignores `subscription_status` unless a list is
+also given, so filtering on it alone would return everyone. An address that left any list
+counts as an unsubscribe.
+
+See what the next sync would pull (read-only):
+
+    docker compose exec worker python -m growthstack.integrations.live_check listmonk
+
+A campaign template with the required `{{ template "content" . }}` and
+`{{ UnsubscribeURL }}` tags is in
+[deploy/listmonk/newsletter-template.html](../deploy/listmonk/newsletter-template.html).

@@ -1,7 +1,17 @@
-"""listmonk client: keep newsletter blocklist/unsubscribes in sync with our DNC list."""
+"""listmonk client: keep newsletter blocklist/unsubscribes in sync with our DNC list.
+
+Checked against listmonk v6.2.0 (the latest stable release). The API user's role
+needs only ``subscribers:get_all`` and ``subscribers:manage``. The client never
+sends the ``query`` parameter: that needs the extra ``subscribers:sql_query``
+permission (403 without it). And ``subscription_status`` is ignored unless a
+``list_id`` is also given, so filtering on it alone returns every subscriber.
+Instead it pages through all subscribers and reads each one's ``status`` and
+per-list ``subscription_status``.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -9,6 +19,8 @@ import httpx
 from growthstack.config import Settings, get_settings
 
 TIMEOUT = httpx.Timeout(20.0)
+PAGE_SIZE = 500  # listmonk allows any per_page because "all" is enabled; keep pages modest
+_REGEX_SPECIALS = set("\\.^$*+?()[]{}|")
 
 
 class ListmonkError(Exception):
@@ -29,9 +41,10 @@ def _retry_after(resp: httpx.Response) -> float | None:
         return None
 
 
-def _sql_str(value: str) -> str:
-    """SQL string literal for listmonk's ``query`` parameter (single quotes doubled)."""
-    return "'" + value.replace("'", "''") + "'"
+def _exact_regex(value: str) -> str:
+    """Anchored Postgres regex matching ``value`` literally (for listmonk's ``search``,
+    which runs ``name ~* $1 OR email ~* $1``)."""
+    return "^" + "".join("\\" + c if c in _REGEX_SPECIALS else c for c in value) + "$"
 
 
 class ListmonkClient:
@@ -67,20 +80,38 @@ class ListmonkClient:
             raise ListmonkError(f"listmonk {what} returned {resp.status_code}: {resp.text[:300]}", resp.status_code)
         return resp.json()
 
-    def _emails(self, params: dict) -> list[str]:
-        body = self._check(self._send("GET", "/api/subscribers", params=params), "list subscribers")
-        results = (body.get("data") or {}).get("results") or []
+    def _subscribers(self) -> Iterator[dict]:
+        """Every subscriber, page by page (oldest first, so new sign-ups during the
+        scan land on later pages instead of shifting earlier ones)."""
+        page = 1
+        while True:
+            # No order_by: listmonk then sorts by subscribers.id.
+            query = {"page": page, "per_page": PAGE_SIZE, "order": "asc"}
+            body = self._check(self._send("GET", "/api/subscribers", params=query), "list subscribers")
+            data = body.get("data") or {}
+            results = data.get("results") or []
+            yield from results
+            if len(results) < PAGE_SIZE or page * PAGE_SIZE >= int(data.get("total") or 0):
+                return
+            page += 1
+
+    @staticmethod
+    def _unique_emails(subscribers: Iterator[dict]) -> list[str]:
         seen: dict[str, None] = {}
-        for r in results:
-            if r.get("email"):
-                seen.setdefault(r["email"].strip().lower(), None)
+        for s in subscribers:
+            if s.get("email"):
+                seen.setdefault(s["email"].strip().lower(), None)
         return list(seen)
 
     def find_subscriber_id(self, email: str) -> int | None:
-        params = {"query": f"subscribers.email={_sql_str(email.strip().lower())}", "per_page": 1}
+        email = email.strip().lower()
+        params = {"search": _exact_regex(email), "per_page": 10}
         body = self._check(self._send("GET", "/api/subscribers", params=params), "find subscriber")
-        results = (body.get("data") or {}).get("results") or []
-        return results[0]["id"] if results else None
+        for r in (body.get("data") or {}).get("results") or []:
+            # The search also matches names, so only an exact email counts.
+            if (r.get("email") or "").strip().lower() == email:
+                return r["id"]
+        return None
 
     def blocklist_email(self, email: str, name: str | None = None) -> None:
         """Create the subscriber as blocklisted, or blocklist the existing one."""
@@ -98,7 +129,13 @@ class ListmonkClient:
         self._check(self._send("PUT", f"/api/subscribers/{sub_id}/blocklist"), "blocklist subscriber")
 
     def blocklisted_emails(self) -> list[str]:
-        return self._emails({"query": "subscribers.status='blocklisted'", "per_page": "all"})
+        """Subscribers blocklisted in listmonk (by an admin, or "unsubscribe from all")."""
+        return self._unique_emails(s for s in self._subscribers() if s.get("status") == "blocklisted")
 
     def unsubscribed_emails(self) -> list[str]:
-        return self._emails({"subscription_status": "unsubscribed", "per_page": "all"})
+        """Subscribers who unsubscribed from at least one list (the campaign unsubscribe link)."""
+        return self._unique_emails(
+            s
+            for s in self._subscribers()
+            if any(lst.get("subscription_status") == "unsubscribed" for lst in s.get("lists") or [])
+        )
