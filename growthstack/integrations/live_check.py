@@ -89,7 +89,11 @@ def check_listmonk(client: ListmonkClient, email: str | None = None) -> bool:
             sub_id = client.find_subscriber_id(email)
             r.check(sub_id is not None, f"find_subscriber_id({email})", str(sub_id))
     except ListmonkError as exc:
-        hint = " (403: give the API user's role subscribers:get_all and subscribers:manage)" if exc.status_code == 403 else ""
+        hint = (
+            " (403: give the API user's role subscribers:get_all, subscribers:manage and lists:get_all)"
+            if exc.status_code == 403
+            else ""
+        )
         r.check(False, "listmonk API", f"{exc}{hint}")
     return not r.failed
 

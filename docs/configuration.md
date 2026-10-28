@@ -108,9 +108,12 @@ then `LISTMONK_URL`, `LISTMONK_API_USER`, `LISTMONK_API_TOKEN`. Hourly, every
 do-not-contact address is blocklisted in listmonk, and listmonk's unsubscribes and
 blocklist come back into the do-not-contact list.
 
-The API user's role needs `subscribers:get_all` (to see subscribers on no list, such as the
-ones growthstack blocklists) and `subscribers:manage`. It doesn't need
-`subscribers:sql_query`, because the client never sends a SQL `query`. To read
+In Users → User roles, create a role with exactly `subscribers:get_all`,
+`subscribers:manage` and `lists:get_all`, and give it to the API user. All three are needed.
+`subscribers:get_all` lets the client see subscribers on no list, such as the ones
+growthstack blocklists. `lists:get_all` lets it blocklist an existing subscriber who is on
+no list; without it listmonk answers `403 Permission denied: subscriber: <id>`. It doesn't
+need `subscribers:sql_query`, because the client never sends a SQL `query`. To read
 unsubscribes, the client pages through every subscriber and reads each one's `status` and
 per-list `subscription_status`. listmonk ignores `subscription_status` unless a list is
 also given, so filtering on it alone would return everyone. An address that left any list

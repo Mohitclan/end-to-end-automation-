@@ -7,7 +7,9 @@ Checked against Twenty v2.52.0's server code:
 - Person ``emails.primaryEmail`` is unique and stored lowercased.
 - Filter values are quoted with " or ' and never unescaped. A quote of the same
   kind ends the value, so we pick the quote character the value does not contain.
-- The API allows 100 requests a minute per workspace, so the client paces itself.
+- The API allows 100 requests a minute per API key, so the client paces itself. Its 429s
+  carry ``Retry-After: 1`` (a token bucket refilling continuously), so one retry recovers.
+These were confirmed against a live v2.52.0 instance as well.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from growthstack.config import Settings, get_settings
 
 TIMEOUT = httpx.Timeout(20.0)
 DEFAULT_STAGES = ("NEW", "SCREENING", "MEETING", "PROPOSAL", "CUSTOMER")
-RATE_LIMIT = 90  # requests per RATE_WINDOW: Twenty allows 100, leave room for other API users
+RATE_LIMIT = 90  # requests per RATE_WINDOW: Twenty allows 100 per key, leave some headroom
 RATE_WINDOW = 60.0
 MAX_RETRY_WAIT = 60.0  # longest Retry-After we wait out once before giving up
 _SCHEME_PREFIX = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)

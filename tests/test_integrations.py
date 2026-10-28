@@ -626,6 +626,30 @@ def test_listmonk_blocklist_existing(listmonk, status, text):
 
 
 @respx.mock
+def test_listmonk_blocklist_already_blocklisted_is_a_no_op(listmonk):
+    respx.post(f"{LM}/api/subscribers").respond(409, text='{"message":"E-mail already exists."}')
+    respx.get(f"{LM}/api/subscribers").respond(
+        json={"data": {"results": [{"id": 7, "email": "gone@x.com", "status": "blocklisted", "lists": []}]}}
+    )
+    block = respx.put(f"{LM}/api/subscribers/7/blocklist")
+    listmonk.blocklist_email("gone@x.com")
+    assert not block.called
+
+
+@respx.mock
+def test_listmonk_blocklist_permission_error_raises(listmonk):
+    # What listmonk v6.2.0 answers when the role lacks lists:get_all and the subscriber is on no list.
+    respx.post(f"{LM}/api/subscribers").respond(409, text='{"message":"E-mail already exists."}')
+    respx.get(f"{LM}/api/subscribers").respond(
+        json={"data": {"results": [{"id": 6, "email": "a@x.com", "status": "enabled", "lists": []}]}}
+    )
+    respx.put(f"{LM}/api/subscribers/6/blocklist").respond(403, json={"message": "Permission denied: subscriber: 6"})
+    with pytest.raises(ListmonkError) as ei:
+        listmonk.blocklist_email("a@x.com")
+    assert ei.value.status_code == 403
+
+
+@respx.mock
 def test_listmonk_blocklist_other_400_raises(listmonk):
     respx.post(f"{LM}/api/subscribers").respond(400, text="invalid email")
     with pytest.raises(ListmonkError) as ei:
@@ -957,7 +981,7 @@ def test_live_check_listmonk(listmonk, capsys):
     assert "OK   read subscribers: 2 blocklisted, 3 unsubscribed from a list" in capsys.readouterr().out
     respx.get(f"{LM}/api/subscribers").respond(403, json={"message": "permission denied"})
     assert check_listmonk(listmonk) is False
-    assert "subscribers:get_all" in capsys.readouterr().out
+    assert "lists:get_all" in capsys.readouterr().out
 
 
 def test_live_check_not_configured(monkeypatch, capsys):

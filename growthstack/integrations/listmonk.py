@@ -1,7 +1,10 @@
 """listmonk client: keep newsletter blocklist/unsubscribes in sync with our DNC list.
 
-Checked against listmonk v6.2.0 (the latest stable release). The API user's role
-needs only ``subscribers:get_all`` and ``subscribers:manage``. The client never
+Checked against listmonk v6.2.0 (the latest stable release), from its source and
+against a live instance. The API user's role needs ``subscribers:get_all``,
+``subscribers:manage`` and ``lists:get_all``. listmonk only lets a role blocklist an
+existing subscriber by id if they're on one of the role's lists, or if the role has
+``lists:get_all``. Our do-not-contact addresses are usually on no list. The client never
 sends the ``query`` parameter: that needs the extra ``subscribers:sql_query``
 permission (403 without it). And ``subscription_status`` is ignored unless a
 ``list_id`` is also given, so filtering on it alone returns every subscriber.
@@ -103,15 +106,19 @@ class ListmonkClient:
                 seen.setdefault(s["email"].strip().lower(), None)
         return list(seen)
 
-    def find_subscriber_id(self, email: str) -> int | None:
+    def find_subscriber(self, email: str) -> dict | None:
         email = email.strip().lower()
         params = {"search": _exact_regex(email), "per_page": 10}
         body = self._check(self._send("GET", "/api/subscribers", params=params), "find subscriber")
         for r in (body.get("data") or {}).get("results") or []:
             # The search also matches names, so only an exact email counts.
             if (r.get("email") or "").strip().lower() == email:
-                return r["id"]
+                return r
         return None
+
+    def find_subscriber_id(self, email: str) -> int | None:
+        sub = self.find_subscriber(email)
+        return sub["id"] if sub else None
 
     def blocklist_email(self, email: str, name: str | None = None) -> None:
         """Create the subscriber as blocklisted, or blocklist the existing one."""
@@ -123,10 +130,14 @@ class ListmonkClient:
         exists = resp.status_code == 409 or (resp.status_code == 400 and "already exists" in resp.text.lower())
         if not exists:
             self._check(resp, "create subscriber")
-        sub_id = self.find_subscriber_id(email)
-        if sub_id is None:
+        sub = self.find_subscriber(email)
+        if sub is None:
             raise ListmonkError("listmonk reported subscriber exists but it could not be found")
-        self._check(self._send("PUT", f"/api/subscribers/{sub_id}/blocklist"), "blocklist subscriber")
+        if sub.get("status") == "blocklisted":
+            return
+        # Acting on a subscriber by id needs lists:get_all unless they're on one of the
+        # role's lists (listmonk's hasSubPerm), so the role must have it.
+        self._check(self._send("PUT", f"/api/subscribers/{sub['id']}/blocklist"), "blocklist subscriber")
 
     def blocklisted_emails(self) -> list[str]:
         """Subscribers blocklisted in listmonk (by an admin, or "unsubscribe from all")."""
